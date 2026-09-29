@@ -10,6 +10,12 @@ __pycache__/
 .coverage
 htmlcov/
 
+# ML artifacts and local datasets
+data/vision/*
+!data/vision/.gitkeep
+models/vision/*
+!models/vision/.gitkeep
+
 # Env
 .env
 .env.*

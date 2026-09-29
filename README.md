@@ -31,6 +31,34 @@ uv run ruff check .
 uv run ruff format .
 ```
 
+## MediaPipe y entrenamiento rápido
+
+El módulo de visión procesa la cámara localmente, guarda únicamente landmarks y
+permite entrenar un clasificador inicial para probar una seña antes de integrar
+el guante:
+
+```bash
+source .venv/bin/activate
+python -m app.vision collect --label A --participant p01
+python -m app.vision collect --label reposo --participant p01
+python -m app.vision train
+python -m app.vision live --target A
+```
+
+En la ventana de recolección, `Espacio` inicia o termina una grabación y `Q`
+sale. La primera ejecución descarga el modelo de MediaPipe en
+`models/vision/hand_landmarker.task`. Los datos se guardan en
+`data/vision/` y están excluidos de Git.
+
+Para comprobar una imagen sin abrir la cámara:
+
+```bash
+python -m app.vision extract --image ruta/a/imagen.jpg
+```
+
+El contrato de integración con la aplicación móvil está en
+[`docs/mobile-api-contract.md`](docs/mobile-api-contract.md).
+
 ## Docker
 
 ```bash
