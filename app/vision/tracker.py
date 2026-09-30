@@ -162,6 +162,29 @@ class HandSlots:
         return slots
 
 
+def apply_sides(
+    primary: tuple | None, other: tuple | None, dominant_left: bool | None
+) -> tuple[tuple | None, tuple | None, bool]:
+    """Pone a cada mano el lado que eligió la persona, no la etiqueta de MediaPipe.
+
+    MediaPipe se equivoca de lado con el puño o de perfil, y el lado decide si los puntos se
+    comparan en espejo con los modelos. Devuelve (principal, otra, solo_la_otra): con una sola
+    mano que MediaPipe asegura que es la no dominante, se deja su lado y `solo_la_otra` es True.
+    """
+    if dominant_left is None or primary is None:
+        return primary, other, False
+    points, is_left, score = primary[:3]
+    if other is None and is_left != dominant_left and score >= LABEL_MIN_SCORE:
+        return primary, other, True
+    primary = (points, dominant_left, score)
+    if other is not None:
+        other = (other[0], not dominant_left, other[2])
+    return primary, other, False
+
+
+HAND_NAMES = {"derecha": False, "right": False, "izquierda": True, "left": True}
+
+
 class HandTracker:
     """Devuelve los 21 puntos de la mano principal por frame; la segunda mano queda en `other`.
 
@@ -174,12 +197,21 @@ class HandTracker:
 
     Se detectan hasta dos manos (señas como gracias usan ambas). La principal es la misma que
     seguiría MediaPipe con una sola mano: la primera que apareció, mientras siga a la vista
-    (`HandSlots`). Las letras se reconocen solo con ella.
+    (`HandSlots`). Las letras se reconocen solo con ella. Con `dominant_left` (`--hand`) la
+    principal es la mano con la que la persona hace las señas y cada mano toma su lado.
     """
 
-    def __init__(self, images: bool = False, min_confidence: float = 0.5, mirrored: bool = True):
+    def __init__(
+        self,
+        images: bool = False,
+        min_confidence: float = 0.5,
+        mirrored: bool = True,
+        dominant_left: bool | None = None,
+    ):
         self._images = images
         self._mirrored = mirrored
+        self.dominant_left = dominant_left
+        self.only_other_hand = False
         options = vision.HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=str(ensure_model())),
             running_mode=vision.RunningMode.IMAGE if images else vision.RunningMode.VIDEO,
@@ -191,15 +223,19 @@ class HandTracker:
         self._landmarker = vision.HandLandmarker.create_from_options(options)
         self.handedness_score = 0.0
         self.other: Hand | None = None
-        self._slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS)
+        self._slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS, dominant_left=dominant_left)
 
-    def detect(self, frame_bgr: np.ndarray, timestamp_ms: int = 0) -> Hand | None:
+    def detect(
+        self, frame_bgr: np.ndarray, timestamp_ms: int = 0, locked: bool = False
+    ) -> Hand | None:
         """Mano principal (o None); la otra, si se ve, queda en `self.other`.
 
         Si la principal se pierde un momento, devuelve None aunque la otra se vea: así la
-        seña de una mano no brinca a la otra a media trayectoria."""
+        seña de una mano no brinca a la otra a media trayectoria. `locked` (a media
+        trayectoria): no se cambia cuál es la dominante."""
         hands = self.detect_hands(frame_bgr, timestamp_ms)
-        primary, other = self._slots.assign(hands, timestamp_ms)
+        primary, other = self._slots.assign(hands, timestamp_ms, locked)
+        primary, other, self.only_other_hand = apply_sides(primary, other, self.dominant_left)
         self.other = other[:2] if other else None
         self.handedness_score = primary[2] if primary else 0.0
         return primary[:2] if primary else None

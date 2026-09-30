@@ -41,8 +41,9 @@ from app.sessions.feedback import (
 from app.sessions.protocol import GloveIn, ObservationIn, VisionIn
 from app.vision.body import BodyStatus, body_status
 from app.vision.glove import FINGERS, GLOVE_VALUES, GloveReading
+from app.vision.input_log import InputLog
 from app.vision.recognizer import Recognizer
-from app.vision.tracker import LABEL_MIN_SCORE, PRIMARY_LOST_MS, HandSlots
+from app.vision.tracker import PRIMARY_LOST_MS, HandSlots, apply_sides
 
 APPROVE_AFTER = 3  # correctas para aprobar; las fallidas no reinician la cuenta
 RESULT_SHOW_MS = 1500  # tiempo que se sigue reportando un resultado para que la app lo muestre
@@ -172,6 +173,8 @@ class PracticeSession:
         )
         self.filter = CorrectionFilter()
         self.live: list[Correction] = []  # correcciones estables del momento
+        mode = f"práctica {target.id}" if target else "demo"
+        self.input_log = InputLog(prefix=f"{mode}: ") if settings.input_log else None
         self.slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS, dominant_left=self.dominant_left)
         # La única mano a la vista es la no dominante: se reconoce, pero no se corrige (el guante
         # y `expected` describen la dominante).
@@ -199,7 +202,7 @@ class PracticeSession:
 
         hands, body, aspect = to_tracker_units(observation.vision)
         primary, other = self.slots.assign(hands, t_ms, locked=self.recognizer.moving)
-        primary, other = self._with_sides(primary, other)
+        primary, other, self.only_other_hand = apply_sides(primary, other, self.dominant_left)
         detection = primary[:2] if primary else None
         new_sign = self.recognizer.update(
             detection,
@@ -222,6 +225,8 @@ class PracticeSession:
         ]
         feedback["glove"] = glove_json(self.glove)
         feedback["other_glove"] = glove_json(self.other_glove)
+        if self.input_log is not None:
+            self._log_inputs(primary, other, feedback)
 
         elapsed = (time.perf_counter() - started) * 1000
         self.processing_ms.append(elapsed)
@@ -536,19 +541,19 @@ class PracticeSession:
             self.glove_history.append((t_ms, state))
         return state
 
-    def _with_sides(self, primary: TrackedHand | None, other: TrackedHand | None) -> tuple:
-        """Pone a cada mano el lado que eligió la persona (ver `dominant_hand`)."""
-        self.only_other_hand = False
-        if self.dominant_left is None or primary is None:
-            return primary, other
-        points, is_left, score = primary
-        if other is None and is_left != self.dominant_left and score >= LABEL_MIN_SCORE:
-            self.only_other_hand = True
-            return primary, other
-        primary = (points, self.dominant_left, score)
-        if other is not None:
-            other = (other[0], not self.dominant_left, other[2])
-        return primary, other
+    def _log_inputs(self, primary: tuple | None, other: tuple | None, feedback: dict) -> None:
+        right = settings.glove_right_emitter
+        gloves = sorted(
+            [(self.glove_emitter, self.glove), (self.other_glove_emitter, self.other_glove)],
+            key=lambda glove: glove[0] != right,
+        )
+        self.input_log.write(
+            primary,
+            other,
+            [("der" if emitter == right else "izq", emitter, state) for emitter, state in gloves],
+            self.recognizer.frame_label,
+            extra=f"{feedback['state']}: {feedback['message']}",
+        )
 
     def _live_corrections(
         self, detection: tuple[np.ndarray, bool] | None, body: np.ndarray | None, t_ms: float

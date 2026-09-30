@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     glove_left_emitter: PositiveInt = 2  # guante de la mano izquierda
     glove_max_age_ms: PositiveInt = 500  # lecturas más viejas cuentan como guante desconectado
     glove_tilt_tolerance_deg: PositiveInt = 30  # desviación de inclinación permitida
+    # Imprime en la consola del servidor las dos manos y los dos guantes de cada sesión.
+    input_log: bool = False
     # false: las correcciones de la cámara solo se muestran, no hacen fallar el intento.
     feedback_camera_blocks: bool = True
 

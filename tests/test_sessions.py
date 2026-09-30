@@ -17,7 +17,7 @@ from app.sessions.store import ModelNotAvailable, Models, SessionStore, get_stor
 from app.vision.catalog import OTHER
 from app.vision.glove import GloveReading
 from app.vision.recognizer import HOLD_SECONDS, VOTE_MS
-from app.vision.tracker import HandSlots
+from app.vision.tracker import HandSlots, apply_sides
 
 WIDTH, HEIGHT = 720, 1280
 FRAME_MS = 33
@@ -582,13 +582,17 @@ def test_the_reference_hand_does_not_change_mid_movement() -> None:
 def test_the_session_uses_the_chosen_hand_side_not_the_mediapipe_label(client: TestClient) -> None:
     session = create(client, dominant_hand="right")
     assert session["dominant_hand"] == "right"
-    practice = app.dependency_overrides[get_store]().get(session["session_id"]).practice
+    dominant_left = app.dependency_overrides[get_store]().get(session["session_id"]).practice
+    dominant_left = dominant_left.dominant_left
+    assert dominant_left is False
 
     # Una sola mano con etiqueta dudosa (puño de perfil): cuenta como la dominante.
-    primary, other = practice._with_sides(tracked(0.5, True, score=0.6), None)
-    assert (primary[1], other, practice.only_other_hand) == (False, None, False)
+    primary, other, only_other = apply_sides(tracked(0.5, True, score=0.6), None, dominant_left)
+    assert (primary[1], other, only_other) == (False, None, False)
+    # Una sola mano que MediaPipe asegura que es la otra: conserva su lado.
+    assert apply_sides(tracked(0.5, True), None, dominant_left)[2] is True
     # Con las dos, cada una toma su lado.
-    primary, other = practice._with_sides(tracked(0.7, True), tracked(0.3, True))
+    primary, other, _ = apply_sides(tracked(0.7, True), tracked(0.3, True), dominant_left)
     assert (primary[1], other[1]) == (False, True)
 
 
@@ -659,3 +663,19 @@ def test_the_feed_keeps_each_glove_apart() -> None:
     assert feed.recent(500, 1, now_ms=1200)[0].fingers["indice"] == 3
     assert feed.recent(500, 2, now_ms=1200)[0].fingers["indice"] == 1
     assert feed.recent(100, 2, now_ms=1200) == []
+
+
+def test_input_log_prints_both_hands_and_gloves(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setattr(settings, "input_log", True)
+    app.dependency_overrides[get_glove_feed] = TwoGloves
+    session = create(client, dominant_hand="left")
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        Player(websocket).frames(0.2)
+
+    line = capsys.readouterr().out.strip().splitlines()[0]
+    assert "práctica a: manos: principal=izquierda" in line
+    assert "guante der E1: dedos 3-1-2-1-3" in line
+    assert "guante izq E2: dedos 3-1-2-1-1" in line

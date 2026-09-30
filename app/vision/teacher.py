@@ -38,6 +38,7 @@ from app.vision.catalog import OTHER, Catalog, load_catalog
 from app.vision.classifier import BACKENDS, SignClassifier, make_backend
 from app.vision.features import NUM_LANDMARKS, Hand, landmarks_to_vector
 from app.vision.glove import GLOVE_VALUES, MIN_GLOVE_PACKETS, GloveCollector, write_packets
+from app.vision.input_log import InputLog
 from app.vision.recognizer import (
     CONFIDENCE_THRESHOLD,
     DYNAMIC_MODEL_PATH,
@@ -61,6 +62,7 @@ from app.vision.sequence import (
     transition,
 )
 from app.vision.tracker import (
+    HAND_NAMES,
     NUM_BODY_LANDMARKS,
     BodyTracker,
     HandSlots,
@@ -769,17 +771,61 @@ def _two_hands_message(sign: str) -> str:
     return f"{_ascii(sign)} se hace con las dos manos: levanta tambien la otra"
 
 
-def live(target: str | None, camera: int, body_enabled: bool = True) -> None:
+def _dominant_left(hand: str | None) -> bool | None:
+    if hand is not None:
+        print(f"Mano principal: {hand} (con las dos manos a la vista se toma esta)")
+    return None if hand is None else HAND_NAMES[hand]
+
+
+def _gloves_for_log(glove: GloveCollector | None) -> list:
+    if glove is None:
+        return []
+    return [
+        ("der", settings.glove_right_emitter, glove.latest(settings.glove_right_emitter)),
+        ("izq", settings.glove_left_emitter, glove.latest(settings.glove_left_emitter)),
+    ]
+
+
+def _log_inputs(
+    log: InputLog | None,
+    detection: Hand | None,
+    other: Hand | None,
+    recognizer: Recognizer,
+    glove: GloveCollector | None,
+) -> None:
+    if log is not None:
+        log.write(detection, other, _gloves_for_log(glove), recognizer.frame_label)
+
+
+def live(
+    target: str | None,
+    camera: int,
+    body_enabled: bool = True,
+    hand: str | None = None,
+    log: bool = False,
+    glove_enabled: bool = False,
+) -> None:
     """Sin `target` funciona como demo: solo muestra la seña reconocida.
 
     Con `target`, un intento solo cuenta si además la persona está bien encuadrada (de
     frente, con cara y hombros a la vista): si no, se indica qué corregir (RF-13).
+
+    `hand` ("derecha"/"izquierda"): la mano principal con las dos a la vista. `log` imprime las
+    dos manos (y los dos guantes con `glove_enabled`) dos veces por segundo.
     """
     recognizer = _load_recognizer()
     if target is not None:
         target = _resolve_signs([target], recognizer.signs)[0]
-    tracker, capture = HandTracker(), open_camera(camera)
+    tracker, capture = HandTracker(dominant_left=_dominant_left(hand)), open_camera(camera)
     body_view = BodyView(body_enabled)
+    glove = (
+        GloveCollector(settings.glove_device_name, settings.glove_characteristic_uuid)
+        if glove_enabled
+        else None
+    )
+    if glove:
+        glove.start()
+    input_log = InputLog() if log else None
     consecutive_correct = 0
     feedback: tuple[str, tuple[int, int, int], float] | None = None
 
@@ -791,12 +837,13 @@ def live(target: str | None, camera: int, body_enabled: bool = True) -> None:
             frame = cv2.flip(frame, 1)
             now = time.monotonic()
             timestamp = int(time.time() * 1000)
-            detection = tracker.detect(frame, timestamp)
+            detection = tracker.detect(frame, timestamp, locked=recognizer.moving)
             body_view.update(frame, timestamp, detection[0] if detection else None)
             _draw_hands(frame, detection, tracker.other)
             new_sign = recognizer.update(
                 detection, tracker.handedness_score, timestamp, tracker.other, body_view.body
             )
+            _log_inputs(input_log, detection, tracker.other, recognizer, glove)
             _draw_recognizer(frame, recognizer, timestamp)
             body_view.draw(frame)
 
@@ -836,6 +883,8 @@ def live(target: str | None, camera: int, body_enabled: bool = True) -> None:
         cv2.destroyAllWindows()
         tracker.close()
         body_view.close()
+        if glove:
+            glove.close()
 
 
 def _draw_prompt(frame: np.ndarray, sign: str, position: int, total: int) -> None:
@@ -1185,6 +1234,8 @@ def practice(
     review: bool = True,
     body_enabled: bool = True,
     glove_enabled: bool = False,
+    hand: str | None = None,
+    log: bool = False,
 ) -> None:
     """Pide seña por seña. Cuando el modelo reconoce la pedida, muestra la captura para
     aprobarla (con `review`), guarda sus puntos y la captura en data/practice/ y pasa a la
@@ -1200,7 +1251,7 @@ def practice(
     queue = [sign for sign in requested for _ in range(reps)]
     print(f"Práctica de {participant}: {' '.join(queue)}")
 
-    tracker, capture = HandTracker(), open_camera(camera)
+    tracker, capture = HandTracker(dominant_left=_dominant_left(hand)), open_camera(camera)
     body_view = BodyView(body_enabled)
     glove = (
         GloveCollector(settings.glove_device_name, settings.glove_characteristic_uuid)
@@ -1209,6 +1260,7 @@ def practice(
     )
     if glove:
         glove.start()
+    input_log = InputLog() if log else None
     hand_frames: deque[tuple[int, np.ndarray, bool, Hand | None, str]] = deque(maxlen=120)
     body_frames: deque[tuple[int, np.ndarray]] = deque(maxlen=120)
     clip: deque[tuple[int, np.ndarray]] = deque()
@@ -1252,7 +1304,7 @@ def practice(
                 started = now
                 continue
 
-            detection = tracker.detect(frame, timestamp)
+            detection = tracker.detect(frame, timestamp, locked=recognizer.moving)
             body_view.update(frame, timestamp, detection[0] if detection else None)
             if body_view.body is not None:
                 body_frames.append((timestamp, body_view.body))
@@ -1265,6 +1317,7 @@ def practice(
                 body_view.body,
                 max_movement_duration_ms=dynamic_timeout_ms,
             )
+            _log_inputs(input_log, detection, tracker.other, recognizer, glove)
             hold_elapsed_ms: int | None = None
             auto_capture = False
             if glove_enabled and not dynamic:
@@ -1508,11 +1561,33 @@ def main() -> None:
     live_parser.add_argument(
         "--no-body", action="store_true", help="sin puntos del cuerpo ni revisión de encuadre"
     )
+    live_parser.add_argument(
+        "--hand",
+        choices=sorted(HAND_NAMES),
+        help="mano principal con las dos manos a la vista (derecha o izquierda)",
+    )
+    live_parser.add_argument(
+        "--log", action="store_true", help="imprimir las dos manos y los guantes que llegan"
+    )
+    live_parser.add_argument(
+        "--glove", action="store_true", help="conectar los guantes por BLE (para verlos en --log)"
+    )
 
     demo_parser = subparsers.add_parser("demo", help="ver en vivo qué seña reconoce el modelo")
     demo_parser.add_argument("--camera", type=int, default=0)
     demo_parser.add_argument(
         "--no-body", action="store_true", help="sin puntos del cuerpo ni revisión de encuadre"
+    )
+    demo_parser.add_argument(
+        "--hand",
+        choices=sorted(HAND_NAMES),
+        help="mano principal con las dos manos a la vista (derecha o izquierda)",
+    )
+    demo_parser.add_argument(
+        "--log", action="store_true", help="imprimir las dos manos y los guantes que llegan"
+    )
+    demo_parser.add_argument(
+        "--glove", action="store_true", help="conectar los guantes por BLE (para verlos en --log)"
     )
 
     practice_parser = subparsers.add_parser(
@@ -1530,6 +1605,14 @@ def main() -> None:
     practice_parser.add_argument(
         "--no-review", action="store_true", help="guardar sin mostrar la captura antes"
     )
+    practice_parser.add_argument(
+        "--hand",
+        choices=sorted(HAND_NAMES),
+        help="mano principal con las dos manos a la vista (derecha o izquierda)",
+    )
+    practice_parser.add_argument(
+        "--log", action="store_true", help="imprimir las dos manos y los guantes que llegan"
+    )
 
     glove_practice_parser = subparsers.add_parser(
         "practica_guante",
@@ -1544,6 +1627,14 @@ def main() -> None:
     glove_practice_parser.add_argument("--camera", type=int, default=0)
     glove_practice_parser.add_argument("--no-body", action="store_true")
     glove_practice_parser.add_argument("--no-review", action="store_true")
+    glove_practice_parser.add_argument(
+        "--hand",
+        choices=sorted(HAND_NAMES),
+        help="mano principal con las dos manos a la vista (derecha o izquierda)",
+    )
+    glove_practice_parser.add_argument(
+        "--log", action="store_true", help="imprimir las dos manos y los guantes que llegan"
+    )
 
     reference_parser = subparsers.add_parser(
         "glove-reference",
@@ -1615,9 +1706,9 @@ def main() -> None:
                 "como estaban."
             ) from None
     elif args.command == "live":
-        live(args.target, args.camera, not args.no_body)
+        live(args.target, args.camera, not args.no_body, args.hand, args.log, args.glove)
     elif args.command == "demo":
-        live(None, args.camera, not args.no_body)
+        live(None, args.camera, not args.no_body, args.hand, args.log, args.glove)
     elif args.command == "practice":
         signs = args.signs.split(",") if args.signs else None
         practice(
@@ -1627,6 +1718,8 @@ def main() -> None:
             max(args.reps, 1),
             review=not args.no_review,
             body_enabled=not args.no_body,
+            hand=args.hand,
+            log=args.log,
         )
     elif args.command in ("practica_guante", "practice-glove", "practice_glove"):
         signs = args.signs.split(",") if args.signs else None
@@ -1638,6 +1731,8 @@ def main() -> None:
             review=not args.no_review,
             body_enabled=not args.no_body,
             glove_enabled=True,
+            hand=args.hand,
+            log=args.log,
         )
     elif args.command == "glove-reference":
         from app.vision.glove_reference import run

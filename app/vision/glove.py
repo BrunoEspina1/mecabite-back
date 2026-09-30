@@ -132,6 +132,17 @@ class GloveCollector:
         with self._lock:
             self.packets.append(packet)
 
+    def latest(self, emitter: int, max_age_ms: float = 500) -> GloveReading | None:
+        """Última lectura de un guante si llegó hace menos de `max_age_ms`."""
+        now_ms = time.time() * 1000
+        with self._lock:
+            for t_ms, packet_emitter, values in reversed(self.packets):
+                if now_ms - t_ms > max_age_ms:
+                    return None
+                if packet_emitter == emitter:
+                    return GloveReading.from_values(t_ms, values)
+        return None
+
 
 @dataclass(frozen=True)
 class GloveReading:
@@ -177,6 +188,10 @@ class GloveFeed(GloveCollector):
         t_ms, emitter, values = packet
         with self._lock:
             self._recent[emitter].append(GloveReading.from_values(t_ms, values))
+
+    def latest(self, emitter: int, max_age_ms: float = 500) -> GloveReading | None:
+        readings = self.recent(max_age_ms, emitter)
+        return readings[-1] if readings else None
 
     def recent(
         self, window_ms: float, emitter: int = 1, now_ms: float | None = None

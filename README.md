@@ -131,7 +131,26 @@ al completar la trayectoria. Sus videos y datos BLE guardan 2000 ms para letras 
 4000 ms para palabras del nivel 3; la tabla presenta 10 filas por página, una muestra cada 200 ms,
 con timestamps completos y marca `OK` para cada paquete validado. En nivel 3 se puede avanzar de
 página para revisar los 4 segundos. El CSV conserva todos los paquetes.
-`--no-review` guarda sin mostrar la captura. Las capturas incluyen cara y cuerpo: son datos
+`--no-review` guarda sin mostrar la captura.
+
+**Mano principal y registro de entradas.** `demo`, `live`, `practice` y `practica_guante` aceptan:
+
+- `--hand derecha|izquierda`: con las dos manos a la vista, la principal (la que se reconoce y se
+  compara con los modelos) es esa; con una sola se usa la que se ve. Sin la opción, la principal es
+  la primera mano que aparece.
+- `--log`: imprime dos veces por segundo las dos manos y los dos guantes que llegan. En `demo` y
+  `live` agrega `--glove` para conectar los guantes (en `practica_guante` ya están conectados).
+
+```bash
+vision live --target gracias --hand izquierda --log --glove
+vision practica_guante --participant omar --signs A,B --hand derecha --log
+```
+
+```text
+[12:03:04.512] manos: principal=derecha (A 0.93) · otra=izquierda | guante der E1: dedos 1-3-2-1-1 roll -4 pitch -43 | guante izq E2: sin datos
+```
+
+En la API (app), `INPUT_LOG=true` imprime la misma línea por cada sesión, más el estado y el mensaje. Las capturas incluyen cara y cuerpo: son datos
 personales, solo para desarrollo, con consentimiento de quien graba (en la app el video no se
 guarda, RNF-10).
 
