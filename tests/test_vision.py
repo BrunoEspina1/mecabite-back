@@ -93,7 +93,8 @@ def test_clear_only_removes_practice_data(tmp_path, monkeypatch) -> None:
 def test_dynamic_practice_saves_clip_since_sign_start(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(teacher, "ROOT_DIR", tmp_path)
     monkeypatch.setattr(teacher, "PRACTICE_DIR", tmp_path / "data" / "practice")
-    clip = deque((t_ms, np.zeros((36, 64, 3), np.uint8)) for t_ms in range(0, 2000, 100))
+    red_frame = np.full((36, 64, 3), (10, 30, 220), np.uint8)
+    clip = deque((t_ms, red_frame.copy()) for t_ms in range(0, 2000, 100))
 
     frames, fps = teacher._clip_since(clip, 1000)
     capture = teacher._save_practice(
@@ -103,7 +104,32 @@ def test_dynamic_practice_saves_clip_since_sign_start(tmp_path, monkeypatch) -> 
     assert len(frames) == 10
     assert fps == 10 / 0.9
     assert capture.endswith(".mp4")
-    assert (tmp_path / capture).stat().st_size > 0
+    video_path = tmp_path / capture
+    assert video_path.stat().st_size > 0
+    video = teacher.cv2.VideoCapture(str(video_path))
+    ok, decoded = video.read()
+    video.release()
+    assert ok
+    means = decoded.mean(axis=(0, 1))
+    assert means[2] > means[1] + 60  # el canal rojo no se guarda con dominante verde
+
+
+@pytest.mark.parametrize(
+    ("target", "duration_ms"),
+    [("J", 2000), ("K", 2000), ("hola", 4000), ("por_favor", 4000)],
+)
+def test_practice_clip_duration_depends_on_sign_level(target: str, duration_ms: int) -> None:
+    assert teacher._practice_clip_duration_ms(target) == duration_ms
+
+
+@pytest.mark.parametrize("duration_ms", [2000, 4000])
+def test_dynamic_review_clip_spans_the_requested_duration(duration_ms: int) -> None:
+    clip = deque((t_ms, np.zeros((4, 4, 3), np.uint8)) for t_ms in range(0, 5001, 100))
+
+    frames, fps = teacher._clip_since(clip, 5000 - duration_ms)
+
+    assert len(frames) == duration_ms // 100 + 1
+    assert len(frames) / fps == pytest.approx(duration_ms / 1000)
 
 
 def test_classifier_save_leaves_no_partial_file(tmp_path) -> None:
@@ -226,3 +252,67 @@ def test_write_glove_packets_uses_manitas_format(tmp_path) -> None:
 
     assert lines[0] == "t_ms,emisor," + ",".join(GLOVE_VALUES)
     assert lines[1].startswith("123,2,0,1,2")
+
+
+def test_practice_rows_can_select_the_one_second_capture_window() -> None:
+    class StaticRecognizer:
+        @staticmethod
+        def is_dynamic(_target: str) -> bool:
+            return False
+
+    points = np.zeros((21, 3))
+    hand_frames = deque(
+        (t_ms, points, False, None, "A") for t_ms in (999, 1000, 1500, 2000)
+    )
+
+    rows = teacher._practice_rows(
+        "A", False, StaticRecognizer(), hand_frames, now_ms=2000, hold_ms=1000
+    )
+
+    assert [row[0] for row in rows] == [1000, 1500, 2000]
+
+
+def test_glove_packets_are_limited_to_the_one_second_capture_window() -> None:
+    packets = [
+        (999, 1, [0.0] * len(GLOVE_VALUES)),
+        (1000, 1, [1.0] * len(GLOVE_VALUES)),
+        (1500, 2, [2.0] * len(GLOVE_VALUES)),
+        (2000, 1, [3.0] * len(GLOVE_VALUES)),
+        (2001, 2, [4.0] * len(GLOVE_VALUES)),
+    ]
+
+    captured = teacher._glove_packets_in_window(packets, start_ms=1000, end_ms=2000)
+
+    assert [packet[0] for packet in captured] == [1000, 1500, 2000]
+
+
+def test_glove_review_panel_renders_multiple_packet_rows(monkeypatch) -> None:
+    rendered_text = []
+    monkeypatch.setattr(
+        teacher.cv2,
+        "putText",
+        lambda _image, text, *_args, **_kwargs: rendered_text.append(text),
+    )
+    start_ms = 1_750_000_000_000
+    packets = [
+        (start_ms + index * 200, index % 2 + 1, [float(index)] * len(GLOVE_VALUES))
+        for index in range(21)
+    ]
+
+    samples = teacher._sample_glove_packets(packets)
+    panel = teacher._glove_review_panel(packets, capture_height=300, page=0)
+
+    assert len(samples) == 20
+    assert [samples[index + 1][0] - samples[index][0] for index in range(19)] == [200] * 19
+    assert panel.shape == (372, 800, 3)
+    assert (
+        "Paquetes: 21   E1: 11   E2: 10   Muestras: 1-10/20 cada 200 ms  Pagina: 1/2"
+        in rendered_text
+    )
+    assert all(str(samples[index][0]) in rendered_text for index in range(10))
+    assert str(samples[10][0]) not in rendered_text
+    assert rendered_text.count("OK") == 11  # encabezado y las diez filas
+
+    rendered_text.clear()
+    teacher._glove_review_panel(packets, capture_height=300, page=1)
+    assert all(str(samples[index][0]) in rendered_text for index in range(10, 20))

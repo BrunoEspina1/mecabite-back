@@ -37,7 +37,7 @@ from app.vision.body import BodyStatus, body_status
 from app.vision.catalog import OTHER, Catalog, load_catalog
 from app.vision.classifier import BACKENDS, SignClassifier, make_backend
 from app.vision.features import NUM_LANDMARKS, Hand, landmarks_to_vector
-from app.vision.glove import MIN_GLOVE_PACKETS, GloveCollector, write_packets
+from app.vision.glove import GLOVE_VALUES, MIN_GLOVE_PACKETS, GloveCollector, write_packets
 from app.vision.recognizer import (
     CONFIDENCE_THRESHOLD,
     DYNAMIC_MODEL_PATH,
@@ -53,7 +53,6 @@ from app.vision.sequence import (
     END_STILL_MS,
     MOVING_SPEED,
     SPEED_LAG_MS,
-    WINDOW_SECONDS,
     augment,
     hand_speed,
     held_pose,
@@ -109,6 +108,13 @@ PRACTICE_TAG = "__practica_"  # <persona>__practica_<t_ms>: la persona queda com
 CLIP_WIDTH = 640  # los clips de señas con movimiento se guardan reducidos
 SAVED_MESSAGE_SECONDS = 1.2
 PRACTICE_WINDOW = "Mecabite - practica"
+GLOVE_HOLD_MS = 1000
+GLOVE_CAPTURE_WINDOW_MS = 1000
+MOVEMENT_CLIP_MS = 2000
+LEVEL_3_WORD_CLIP_MS = 4000
+CLIP_HISTORY_MS = LEVEL_3_WORD_CLIP_MS + 500
+GLOVE_REVIEW_SAMPLE_MS = 200
+GLOVE_REVIEW_PAGE_SIZE = 10
 
 
 def _draw_text(frame: np.ndarray, text: str, y: int, color=(255, 255, 255)) -> None:
@@ -824,18 +830,46 @@ def _practice_rows(
     recognizer: Recognizer,
     hand_frames: deque[tuple[int, np.ndarray, bool, Hand | None, str]],
     now_ms: int,
+    hold_ms: int | None = None,
 ) -> list[tuple[int, np.ndarray, bool, Hand | None]]:
     """Cuadros a guardar (t_ms, puntos, mano izquierda, la otra mano): la seña completa si es
-    con movimiento; si es estática, los del último HOLD_SECONDS en que el modelo vio la letra
+    con movimiento; si es estática, los del intervalo pedido en que el modelo vio la letra
     pedida (o todos, si se forzó)."""
     if recognizer.is_dynamic(target):
         return recognizer.moving_detector.frames()
-    since = now_ms - (HOLD_SECONDS * 1000 + 300)
+    since = now_ms - (hold_ms if hold_ms is not None else HOLD_SECONDS * 1000 + 300)
     return [
         (t_ms, points, is_left, other)
         for t_ms, points, is_left, other, label in hand_frames
         if t_ms >= since and (forced or label == target)
     ]
+
+
+def _glove_packets_in_window(
+    packets: list[tuple[int, int, list[float]]], start_ms: int, end_ms: int
+) -> list[tuple[int, int, list[float]]]:
+    """Paquetes BLE capturados dentro del intervalo de la seña, inclusive."""
+    return [packet for packet in packets if start_ms <= packet[0] <= end_ms]
+
+
+def _draw_glove_hold_progress(frame: np.ndarray, sign: str, elapsed_ms: int) -> None:
+    """Barra de progreso para confirmar una seña estática durante un segundo."""
+    progress = min(max(elapsed_ms / GLOVE_HOLD_MS, 0.0), 1.0)
+    elapsed = min(max(elapsed_ms, 0), GLOVE_HOLD_MS) / 1000
+    _draw_text(frame, f"Mantén {_ascii(sign)}: {elapsed:.1f}/1.0 s", 108, (80, 220, 120))
+    x, y = 16, 118
+    width, height = max(1, min(440, frame.shape[1] - 32)), 18
+    cv2.rectangle(frame, (x, y), (x + width, y + height), (50, 50, 50), -1)
+    cv2.rectangle(
+        frame,
+        (x, y),
+        (x + round(width * progress), y + height),
+        (80, 220, 120),
+        -1,
+    )
+    cv2.rectangle(frame, (x, y), (x + width, y + height), (235, 235, 235), 1)
+    if progress >= 1.0:
+        _draw_text(frame, "Capturando seña y guante...", 160, (80, 220, 120))
 
 
 def _clip_since(
@@ -848,19 +882,161 @@ def _clip_since(
     return frames, len(frames) / max((clip[-1][0] - since_ms) / 1000, 0.1)
 
 
-def _review(frames: list[np.ndarray], fps: float, title: str, size: tuple[int, int]) -> str:
+def _practice_clip_duration_ms(target: str) -> int:
+    """Ventana de video: 1 s para movimiento y 2 s para palabras del nivel 3."""
+    sign = load_sign_catalog().find(target)
+    return LEVEL_3_WORD_CLIP_MS if sign is not None and sign.level == 3 else MOVEMENT_CLIP_MS
+
+
+def _sample_glove_packets(
+    packets: list[tuple[int, int, list[float]]], interval_ms: int = GLOVE_REVIEW_SAMPLE_MS
+) -> list[tuple[int, int, list[float]]]:
+    """Muestra el paquete más cercano cada 200 ms; el CSV conserva el flujo completo."""
+    ordered = sorted(packets, key=lambda packet: packet[0])
+    if len(ordered) <= 1:
+        return ordered
+    samples = []
+    next_index = 0
+    target_ms = ordered[0][0]
+    while target_ms < ordered[-1][0] and next_index < len(ordered):
+        nearest_index = min(
+            range(next_index, len(ordered)),
+            key=lambda index: abs(ordered[index][0] - target_ms),
+        )
+        samples.append(ordered[nearest_index])
+        next_index = nearest_index + 1
+        target_ms += interval_ms
+    return samples
+
+
+def _glove_review_panel(
+    packets: list[tuple[int, int, list[float]]], capture_height: int, page: int = 0
+) -> np.ndarray:
+    """Tabla compacta de 10 paquetes espaciados 200 ms; páginas para intervalos largos."""
+    width = 800
+    samples = _sample_glove_packets(packets)
+    page_count = max(1, (len(samples) + GLOVE_REVIEW_PAGE_SIZE - 1) // GLOVE_REVIEW_PAGE_SIZE)
+    page = min(max(page, 0), page_count - 1)
+    start = page * GLOVE_REVIEW_PAGE_SIZE
+    visible_samples = samples[start : start + GLOVE_REVIEW_PAGE_SIZE]
+    first_row, line_height = 110, 24
+    panel_height = max(capture_height, first_row + len(visible_samples) * line_height + 22)
+    panel = np.full((panel_height, width, 3), (28, 31, 36), dtype=np.uint8)
+    counts: Counter[int] = Counter(emitter for _, emitter, _ in packets)
+    scale, header_scale = 0.4, 0.3
+
+    def put(
+        text: str,
+        x: int,
+        y: int,
+        color: tuple[int, int, int] = (235, 235, 235),
+        font_scale: float = scale,
+    ) -> None:
+        cv2.putText(
+            panel,
+            text,
+            (x, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            color,
+            max(1, round(font_scale * 3)),
+            cv2.LINE_AA,
+        )
+
+    put("DATOS BLE DE LA CAPTURA", 14, 30, (100, 220, 140))
+    put(
+        f"Paquetes: {len(packets)}   E1: {counts[1]}   E2: {counts[2]}   "
+        f"Muestras: {start + 1}-{start + len(visible_samples)}/{len(samples)} "
+        f"cada {GLOVE_REVIEW_SAMPLE_MS} ms  Pagina: {page + 1}/{page_count}",
+        14,
+        60,
+    )
+    header_y = 91
+    time_x, emitter_x, ok_x, values_x, value_gap = 10, 104, 126, 150, 57
+    put("timestamp_ms", time_x, header_y, (170, 185, 205), header_scale)
+    put("E", emitter_x, header_y, (170, 185, 205), header_scale)
+    put("OK", ok_x, header_y, (170, 185, 205), header_scale)
+    for index, sensor in enumerate(GLOVE_VALUES):
+        put(sensor, values_x + index * value_gap, header_y, (170, 185, 205), header_scale)
+
+    if not samples:
+        put("No llegaron paquetes BLE en este intervalo.", 14, first_row + line_height)
+    else:
+        for row_index, (t_ms, emitter, values) in enumerate(visible_samples):
+            y = first_row + row_index * line_height
+            color = (120, 225, 155) if emitter == 1 else (120, 190, 245)
+            put(str(t_ms), time_x, y, color)
+            put(str(emitter), emitter_x, y, color)
+            put("OK", ok_x, y, (100, 220, 140))
+            for index, value in enumerate(values):
+                put(f"{value:.1f}", values_x + index * value_gap, y, color)
+        put(
+            "OK = valido | , anterior / . siguiente pagina",
+            14,
+            panel_height - 8,
+            (100, 220, 140),
+        )
+    return panel
+
+
+def _review(
+    frames: list[np.ndarray],
+    fps: float,
+    title: str,
+    size: tuple[int, int],
+    glove_packets: list[tuple[int, int, list[float]]] | None = None,
+) -> str:
     """Muestra la captura antes de guardarla (el clip se repite en bucle).
 
     Devuelve `save`, `retry`, `skip` o `quit`.
     """
     delay = max(int(1000 / fps), 1) if len(frames) > 1 else 50
     index = 0
+    glove_page = 0
     while True:
-        view = cv2.resize(frames[index % len(frames)], size)
-        _draw_text(view, title, 32, (80, 220, 120))
-        _draw_text(view, "ENTER/ESPACIO guarda | R la repite | N salta | Q sale", 70)
+        frame = frames[index % len(frames)]
+        if glove_packets is None:
+            view = cv2.resize(frame, size)
+            _draw_text(view, title, 32, (80, 220, 120))
+            _draw_text(view, "ENTER/ESPACIO guarda | R la repite | N salta | Q sale", 70)
+        else:
+            panel_width = 800
+            max_width, max_height = 1450, 760
+            scale = min(
+                1.0,
+                max_height / frame.shape[0],
+                (max_width - panel_width) / frame.shape[1],
+            )
+            capture_size = (
+                max(1, round(frame.shape[1] * scale)),
+                max(1, round(frame.shape[0] * scale)),
+            )
+            capture_view = cv2.resize(frame, capture_size)
+            _draw_text(capture_view, title, 32, (80, 220, 120))
+            _draw_text(capture_view, "ENTER/ESPACIO guarda | R la repite | N salta | Q sale", 70)
+            panel = _glove_review_panel(glove_packets, capture_view.shape[0], glove_page)
+            view_height = max(capture_view.shape[0], panel.shape[0])
+            view = np.zeros(
+                (view_height, capture_view.shape[1] + panel_width, 3), dtype=np.uint8
+            )
+            capture_y = (view_height - capture_view.shape[0]) // 2
+            view[
+                capture_y : capture_y + capture_view.shape[0], : capture_view.shape[1]
+            ] = capture_view
+            view[: panel.shape[0], capture_view.shape[1] :] = panel
         cv2.imshow(PRACTICE_WINDOW, view)
         key = cv2.waitKey(delay) & 0xFF
+        if glove_packets is not None and key in (ord(","), 81):
+            glove_page = max(0, glove_page - 1)
+            continue
+        if glove_packets is not None and key in (ord("."), 83):
+            sample_count = len(_sample_glove_packets(glove_packets))
+            page_count = max(
+                1,
+                (sample_count + GLOVE_REVIEW_PAGE_SIZE - 1) // GLOVE_REVIEW_PAGE_SIZE,
+            )
+            glove_page = min(page_count - 1, glove_page + 1)
+            continue
         if key in (13, 10, ord(" ")):
             return "save"
         if key in (ord("r"), ord("R"), 8, 127):
@@ -940,9 +1116,14 @@ def _save_practice(
     if clip_frames:
         height, width = clip_frames[0].shape[:2]
         path = capture_dir / f"{name}.mp4"
-        video = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+        video = cv2.VideoWriter(
+            str(path), cv2.VideoWriter_fourcc(*"mp4v"), max(fps, 1.0), (width, height)
+        )
+        if not video.isOpened():
+            video.release()
+            raise RuntimeError(f"No se pudo crear el video de práctica: {path}")
         for frame in clip_frames:
-            video.write(frame)
+            video.write(np.ascontiguousarray(frame, dtype=np.uint8))
         video.release()
     else:
         path = capture_dir / f"{name}.jpg"
@@ -1012,6 +1193,7 @@ def practice(
     feedback: tuple[str, tuple[int, int, int], float] | None = None
     index, started = 0, time.monotonic()
     glove_mark = glove.mark() if glove else 0
+    glove_hold_started_ms: int | None = None
     paused_until = 0.0  # tras guardar, un momento para cambiar de seña (o reacomodar la mano)
 
     try:
@@ -1024,6 +1206,13 @@ def practice(
             now = time.monotonic()
             timestamp = int(time.time() * 1000)
             target = queue[index]
+            dynamic = recognizer.is_dynamic(target)
+            if dynamic:
+                clip_height = int(clean.shape[0] * CLIP_WIDTH / clean.shape[1])
+                clip_height = max(2, clip_height - clip_height % 2)
+                clip.append((timestamp, cv2.resize(clean, (CLIP_WIDTH, clip_height))))
+                while timestamp - clip[0][0] > CLIP_HISTORY_MS:
+                    clip.popleft()
             if now < paused_until:
                 _draw_prompt(frame, target, index + 1, len(queue))
                 if feedback:
@@ -1033,12 +1222,6 @@ def practice(
                     break
                 started = now
                 continue
-            dynamic = recognizer.is_dynamic(target)
-            if dynamic:
-                height = int(clean.shape[0] * CLIP_WIDTH / clean.shape[1])
-                clip.append((timestamp, cv2.resize(clean, (CLIP_WIDTH, height))))
-                while timestamp - clip[0][0] > (WINDOW_SECONDS + 0.5) * 1000:
-                    clip.popleft()
 
             detection = tracker.detect(frame, timestamp)
             body_view.update(frame, timestamp, detection[0] if detection else None)
@@ -1048,6 +1231,18 @@ def practice(
             new_sign = recognizer.update(
                 detection, tracker.handedness_score, timestamp, tracker.other, body_view.body
             )
+            hold_elapsed_ms: int | None = None
+            auto_capture = False
+            if glove_enabled and not dynamic:
+                if recognizer.stabilizer.candidate == target:
+                    if glove_hold_started_ms is None:
+                        glove_hold_started_ms = round(recognizer.stabilizer.since * 1000)
+                    hold_elapsed_ms = max(0, timestamp - glove_hold_started_ms)
+                    auto_capture = hold_elapsed_ms >= GLOVE_HOLD_MS
+                else:
+                    glove_hold_started_ms = None
+            else:
+                glove_hold_started_ms = None
             if detection and recognizer.frame_label:
                 label = recognizer.frame_label[0]
                 hand_frames.append((timestamp, *detection, tracker.other, label))
@@ -1062,15 +1257,22 @@ def practice(
             if feedback and now < feedback[2]:
                 _draw_text(frame, feedback[0], 70, feedback[1])
             else:
-                how = "hazla completa y deja la mano quieta" if dynamic else "sostenla"
+                if dynamic:
+                    how = "hazla completa y deja la mano quieta"
+                elif glove_enabled:
+                    how = "sostenla 1 segundo para capturar"
+                else:
+                    how = "sostenla"
                 _draw_text(frame, f"{how} | ESPACIO guarda igual | N salta | Q sale", 70)
+            if hold_elapsed_ms is not None:
+                _draw_glove_hold_progress(frame, target, hold_elapsed_ms)
             cv2.imshow(PRACTICE_WINDOW, frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), ord("Q"), 27):
                 break
             result = None
-            if new_sign == target:
+            if auto_capture or (new_sign == target and not (glove_enabled and not dynamic)):
                 result = "reconocida"
             elif key == ord(" "):
                 result = "forzada"  # el modelo no la reconoció, pero tú sabes que está bien
@@ -1086,23 +1288,51 @@ def practice(
                 feedback = (f"No se guardo: {body_view.status.issue}", (0, 200, 255), now + 2.0)
                 recognizer.reset()
                 hand_frames.clear()
+                glove_hold_started_ms = None
                 continue
             if result != "saltada":
                 rows = _practice_rows(
-                    target, result == "forzada", recognizer, hand_frames, timestamp
+                    target,
+                    result == "forzada",
+                    recognizer,
+                    hand_frames,
+                    timestamp,
+                    hold_ms=GLOVE_HOLD_MS if glove_enabled and not dynamic else None,
                 )
                 if not rows:
                     feedback = ("No hay mano: no se guardo nada", (0, 200, 255), now + 1.5)
+                    glove_hold_started_ms = None
                     continue
-                glove_packets = glove.since(glove_mark) if glove else None
+                capture_duration_ms = (
+                    _practice_clip_duration_ms(target) if dynamic else GLOVE_CAPTURE_WINDOW_MS
+                )
+                capture_start_ms = timestamp - capture_duration_ms
+                if dynamic:
+                    movement_rows = _trim_to_motion(rows)
+                    if movement_rows:
+                        capture_start_ms = min(capture_start_ms, movement_rows[0][0])
+                glove_window_start_ms = capture_start_ms
+                glove_packets = (
+                    _glove_packets_in_window(
+                        glove.since(glove_mark), glove_window_start_ms, timestamp
+                    )
+                    if glove
+                    else None
+                )
                 if glove and len(glove_packets) < MIN_GLOVE_PACKETS:
                     feedback = (
                         f"No hay suficientes datos del guante ({len(glove_packets)} paquetes)",
                         (0, 200, 255),
                         now + 2.0,
                     )
+                    recognizer.reset()
+                    hand_frames.clear()
+                    glove_hold_started_ms = None
                     continue
-                clip_frames, fps = _clip_since(clip, rows[0][0] - 300)
+                if dynamic:
+                    clip_frames, fps = _clip_since(clip, capture_start_ms)
+                else:
+                    clip_frames, fps = [], 0.0
                 if review:
                     photo = clean.copy()
                     if body_view.body is not None:
@@ -1110,7 +1340,13 @@ def practice(
                     _draw_hands(photo, rows[-1][1:3], rows[-1][3])
                     size = (clean.shape[1], clean.shape[0])
                     title = f"{_ascii(target)} ({result}): revisala antes de guardar"
-                    decision = _review(clip_frames or [photo], fps, title, size)
+                    decision = _review(
+                        clip_frames or [photo],
+                        fps,
+                        title,
+                        size,
+                        glove_packets=glove_packets,
+                    )
                     if decision == "quit":
                         break
                     if decision == "retry":
@@ -1119,6 +1355,7 @@ def practice(
                         recognizer.reset()
                         hand_frames.clear()
                         clip.clear()
+                        glove_hold_started_ms = None
                         feedback = (
                             "Descartada: hazla otra vez",
                             (0, 200, 255),
@@ -1149,6 +1386,7 @@ def practice(
             results.append((target, result))
             index, started = index + 1, now
             glove_mark = glove.mark() if glove else 0
+            glove_hold_started_ms = None
             if saved:
                 paused_until = now + SAVED_MESSAGE_SECONDS
             recognizer.reset()

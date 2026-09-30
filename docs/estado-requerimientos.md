@@ -47,7 +47,7 @@ que funciona con datos del iPhone vía REST o WebSocket, que es lo que pide el M
 | RF-03 | MediaPipe de mano y cuerpo para localizar la seña | 🟡 Parcial | Webcam: Hand + Pose Landmarker lite (33 puntos) y zona de la palma (frente, cara, boca/barbilla, lado de la cara, hombro, pecho) en `app/vision/body.py`, `tracker.py`; tests en `tests/test_body.py`. API: recibe `pose_landmarks` en todos los niveles y los convierte a las unidades de la webcam (`app/sessions/practice.py`) | Usar la zona para el componente `localization` (hoy `not_available`); validar zonas con intérprete |
 | RF-04 | Combinar guante y cámara | ⛔ Bloqueado | — | Guante; definir fusión por componente |
 | RF-05 | Detectar y evaluar movimiento | 🟡 Parcial | Webcam: `DynamicDetector` detecta inicio y fin por velocidad y clasifica la trayectoria (`app/vision/sequence.py`) | Por API; reportar el componente `movement` |
-| RF-06 | Estática válida al sostenerla ≥ 1 s | 🟡 Parcial | `SignStabilizer` en `app/vision/recognizer.py`, sin cámara y con el tiempo de cada cuadro (`tests/test_recognizer.py`). Tiempo configurable con `VISION_HOLD_MS`: 1000 por defecto; la API lo reporta como `hold_time_ms` | **El `.env` local usa 200 ms**; el requerimiento pide 1 s: decisión pendiente. Con 0.2 s se confirman formas intermedias de las dinámicas (I al inicio de la J, L al inicio de Z/Q/X, N al inicio de la Ñ). Por API |
+| RF-06 | Estática válida al sostenerla ≥ 1 s | 🟡 Parcial | `SignStabilizer` en `app/vision/recognizer.py`, sin cámara y con el tiempo de cada cuadro (`tests/test_recognizer.py`). `VISION_HOLD_MS=1000` en el `.env` local y como valor por defecto; la API lo reporta como `hold_time_ms` | Validar con personas y modelos reales por API |
 | RF-07 | Dinámica: trayectoria completa en ≤ 3 s | 🟡 Parcial | Modelo dinámico sobre ventana de 2 s; `Recognizer` lo combina con el estático sin cámara. Con videos grabados reconoce J, Z, Q, X y Ñ | Por API; decidir si un clasificador cuenta como "patrón de referencia" o se agregan plantillas al catálogo |
 | RF-08 | Evaluar solo los componentes del nivel | 🟡 Parcial | Niveles y componentes definidos en el catálogo y en `GET /catalog/signs` | Que el motor evalúe por nivel. El texto del nivel 3 es ambiguo ("se agregan localización y movimiento") |
 | RF-09 | Catálogo exclusivo de 15 señas en 3 niveles | 🟡 Parcial | `signs.json` + `GET /catalog/signs` (`tests/test_catalog.py`); letras extra fuera de la API | Hay datos de 4 palabras (glosas de Zenodo, 12 personas); **falta mamá** y la localización en el modelo (gracias 47 %) |
@@ -90,7 +90,6 @@ En orden de prioridad para el MVP.
 
 | Tema | Quién | Bloquea |
 | --- | --- | --- |
-| Estáticas: confirmar a 0.2 s (`.env` local) o a 1 s (valor por defecto, RF-06). Con 0.2 s aparecen formas intermedias de las dinámicas como señas confirmadas | Equipo | RF-06 |
 | Specs del guante: unidades, rangos, frecuencia, conexión | Electrónica | RF-01, RF-02, RF-04, RF-15 |
 | Persona intérprete de LSM | Equipo | RNF-05, RF-11, nivel 3 |
 | Confirmar contrato v0.2.0 y enviar un JSON de observación real | Móvil | Pendiente 4 |

@@ -123,7 +123,13 @@ Las forzadas son las más valiosas: son justo los casos en que el modelo falla c
 `vision practica_guante` requiere el receptor BLE encendido. Guarda los landmarks en
 `data/practice/landmarks/<seña>/` y los paquetes crudos compatibles con `manitas` en
 `data/practice/glove/<seña>/`. La configuración BLE está en `GLOVE_DEVICE_NAME` y
-`GLOVE_CHARACTERISTIC_UUID` del `.env`.
+`GLOVE_CHARACTERISTIC_UUID` del `.env`. En señas estáticas, al mantener la seña reconocida un
+segundo aparece una barra de progreso y se toma la captura automáticamente. La revisión muestra
+una tabla con los paquetes BLE recibidos durante ese segundo; las señas con movimiento se capturan
+al completar la trayectoria. Sus videos y datos BLE guardan 2000 ms para letras con movimiento y
+4000 ms para palabras del nivel 3; la tabla presenta 10 filas por página, una muestra cada 200 ms,
+con timestamps completos y marca `OK` para cada paquete validado. En nivel 3 se puede avanzar de
+página para revisar los 4 segundos. El CSV conserva todos los paquetes.
 `--no-review` guarda sin mostrar la captura. Las capturas incluyen cara y cuerpo: son datos
 personales, solo para desarrollo, con consentimiento de quien graba (en la app el video no se
 guarda, RNF-10).
