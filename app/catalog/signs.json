@@ -20,7 +20,7 @@
   ],
   "_nota_sign_types": "El tiempo que hay que sostener una estática (RF-06) no va aquí: se configura con VISION_HOLD_MS en .env y la API lo reporta como hold_time_ms.",
   "_nota_hands": "`hands`: 2 si la seña usa las dos manos (si falta, 1). Con una sola mano no se acepta aunque el movimiento sea correcto.",
-  "_nota_expected": "`expected`: cómo debe verse la seña para corregir (RF-13). `glove_fingers`: valores del guante aceptados por dedo (1 encogido, 2 a medias, 3 estirado); un dedo que no aparece no se revisa con el guante. Por fallas del guante: el medio no llega a 1 (encogido = [1, 2]), el pulgar marca 2 muy seguido, en la C todos marcan 3 (se revisa con la cámara) y en la Q pulgar e índice quedan en 3. `camera_fingers`: extended | half | flexed, revisados con la cámara. `palm`: facing (palma o dorso hacia la cámara) | side. `pointing`: up | down. La inclinación esperada del guante está en glove_reference.json (`vision glove-reference`). `glove_margin`: cuánto puede pasarse un dedo de lo aceptado (0.25 por defecto). `tilt_tolerance_deg`: grados de inclinación permitidos para esa seña (por defecto GLOVE_TILT_TOLERANCE_DEG). `glove_confirms`: en práctica el guante solo (dedos e inclinación sostenidos 1 s) cuenta la seña aunque la cámara no vea la mano; no revisa el movimiento. En la Ñ el pulgar acepta [2, 3]: el guante lo marca 3 aunque sujete los dedos.",
+  "_nota_expected": "`expected`: cómo debe verse la seña para corregir (RF-13). `glove_fingers`: valores del guante aceptados por dedo (1 encogido, 2 a medias, 3 estirado); un dedo que no aparece no se revisa con el guante. Por fallas del guante: el medio no llega a 1 (encogido = [1, 2]), el pulgar marca 2 muy seguido, en la C todos marcan 3 (se revisa con la cámara) y en la Q pulgar e índice quedan en 3. `camera_fingers`: extended | half | flexed, revisados con la cámara. `palm`: facing (palma o dorso hacia la cámara) | side. `pointing`: up | down. La inclinación esperada del guante está en glove_reference.json (`vision glove-reference`). `glove_margin`: cuánto puede pasarse un dedo de lo aceptado (0.25 por defecto). `tilt_tolerance_deg`: grados de inclinación permitidos para esa seña (por defecto GLOVE_TILT_TOLERANCE_DEG). `glove_confirms`: en práctica el guante solo (dedos e inclinación sostenidos 1 s) cuenta la seña aunque la cámara no vea la mano; no revisa el movimiento y solo aplica a señas con inclinación en glove_reference.json (las de nivel 3 aún no la tienen). Con dos manos solo revisa el guante de la dominante. En la Ñ el pulgar acepta [2, 3]: el guante lo marca 3 aunque sujete los dedos.",
   "sign_types": {
     "static": { "max_duration_ms": null },
     "dynamic": { "max_duration_ms": 3000 }
@@ -133,7 +133,8 @@
         "movement": "Trazar una J con la punta del meñique."
       },
       "expected": {
-        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [3], "pulgar": [1, 2]}
+        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [3], "pulgar": [1, 2]},
+        "glove_confirms": true
       }
     },
     {
@@ -160,7 +161,8 @@
       "validated": false,
       "components": {},
       "expected": {
-        "glove_fingers": {"pulgar": [3], "indice": [3], "medio": [1, 2], "anular": [1], "menique": [1]}
+        "glove_fingers": {"pulgar": [3], "indice": [3], "medio": [1, 2], "anular": [1], "menique": [1]},
+        "glove_confirms": true
       }
     },
     {
@@ -174,6 +176,7 @@
       "components": {},
       "expected": {
         "glove_fingers": {"indice": [1, 2], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [1, 2]},
+        "glove_confirms": true,
         "camera_fingers": {"indice": "half"}
       }
     },
@@ -190,7 +193,8 @@
         "movement": "Trazar una Z con la punta del índice."
       },
       "expected": {
-        "glove_fingers": {"indice": [3], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [1, 2]}
+        "glove_fingers": {"indice": [3], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [1, 2]},
+        "glove_confirms": true
       }
     },
     {
@@ -203,7 +207,8 @@
       "validated": false,
       "components": {},
       "expected": {
-        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]}
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]},
+        "glove_confirms": true
       }
     },
     {
@@ -217,7 +222,8 @@
       "validated": false,
       "components": {},
       "expected": {
-        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]}
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]},
+        "glove_confirms": true
       }
     },
     {
@@ -231,7 +237,8 @@
       "validated": false,
       "components": {},
       "expected": {
-        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]}
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]},
+        "glove_confirms": true
       }
     },
     {
@@ -244,7 +251,8 @@
       "validated": false,
       "components": {},
       "expected": {
-        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [2, 3]}
+        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [2, 3]},
+        "glove_confirms": true
       }
     },
     {

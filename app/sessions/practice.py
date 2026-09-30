@@ -19,10 +19,10 @@ la seña objetivo para dar correcciones concretas (`corrections`: "Estira más e
 Una ejecución que el modelo reconoce como la objetivo no cuenta si hay correcciones de un
 componente requerido: se rechaza diciendo qué corregir (RF-13, principio Indivisa).
 
-Las señas con `expected.glove_confirms` (la Ñ, que la cámara pierde con la mano hacia abajo)
-también cuentan con el guante solo: dedos e inclinación bien durante `GLOVE_CONFIRM_MS`, aunque
-la cámara no vea la mano. No revisa el movimiento. Para volver a contar hay que salir de la
-posición.
+Las señas con `expected.glove_confirms` (Y y las de nivel 2 y 3) también cuentan con el guante
+solo: dedos e inclinación bien durante `GLOVE_CONFIRM_MS`, aunque la cámara no vea la mano (la
+Ñ, con la mano hacia abajo, se le pierde). No revisa el movimiento. Para volver a contar hay que
+salir de la posición.
 """
 
 from __future__ import annotations

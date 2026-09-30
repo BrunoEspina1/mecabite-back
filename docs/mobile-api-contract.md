@@ -550,7 +550,7 @@ Estados (`state`):
 | `confirmed` | Una ejecución se reconoció correctamente |
 | `approved` | Se cumplieron 3 ejecuciones correctas; las fallidas no reinician la cuenta (RF-10) |
 | `rejected` | La ejecución falló; `components` dice qué falló (RF-13) |
-| `no_hand` | No se detecta la mano. En señas que el guante puede contar solo (Ñ, Y: `glove_confirms`) con el guante conectado no se usa: llega `waiting` con las correcciones del guante y `confirmed` al sostener la seña 1 s |
+| `no_hand` | No se detecta la mano. En señas que el guante puede contar solo (Y y las de nivel 2 y 3 con inclinación de referencia: `glove_confirms`) con el guante conectado no se usa: llega `waiting` con las correcciones del guante y `confirmed` al sostener la seña 1 s |
 | `disconnected` | Falta una fuente requerida: el guante con `GLOVE_REQUIRED=true` |
 
 Estados de cada componente: `correct`, `incorrect`, `not_required`, `not_available`
