@@ -112,7 +112,7 @@
         "orientation": "Palma hacia el frente."
       },
       "expected": {
-        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [3], "pulgar": [2, 3]},
+        "glove_fingers": {"indice": [1, 2], "medio": [1, 2], "anular": [1, 2], "menique": [3], "pulgar": [2, 3]},
         "camera_fingers": {"pulgar": "extended"},
         "palm": "facing"
       }
