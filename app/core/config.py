@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     # API: la laptop lee el guante por BLE y lo junta con cada observación del iPhone.
     glove_live: bool = False  # conectar el guante al arrancar la API
     glove_required: bool = False  # sin lecturas recientes la práctica no evalúa (`disconnected`)
-    glove_emitter: PositiveInt = 1  # emisor del guante de la mano que hace la seña
+    # Hay un guante por mano; cada paquete BLE dice de cuál viene ("emisor").
+    glove_right_emitter: PositiveInt = 1  # guante de la mano derecha
+    glove_left_emitter: PositiveInt = 2  # guante de la mano izquierda
     glove_max_age_ms: PositiveInt = 500  # lecturas más viejas cuentan como guante desconectado
     glove_tilt_tolerance_deg: PositiveInt = 30  # desviación de inclinación permitida
     # false: las correcciones de la cámara solo se muestran, no hacen fallar el intento.

@@ -111,6 +111,7 @@ En orden de prioridad para el MVP.
 
 | Fecha | Qué se hizo | Requerimientos |
 | --- | --- | --- |
+| 2026-09-30 | Dos guantes (emisor 1 derecho, 2 izquierdo): se corrige con el de la mano dominante y el otro se reporta en `other_glove`. La referencia de inclinación solo aplica al derecho. 128 tests pasan | RF-01, RF-04 |
 | 2026-09-30 | Mano dominante (`dominant_hand` en `POST /sessions`): con dos manos la elegida es la de referencia para los modelos y el guante, sin cambiarla a media trayectoria; con una se usa la que se ve. La app manda la mano elegida en Ajustes. 125 tests pasan | RF-04, RF-09 |
 | 2026-09-30 | Correcciones concretas con guante + cámara: `corrections` y `glove` en `feedback`, `expected` por seña en `signs.json` (con las fallas del guante), guante por BLE en la API (`GLOVE_LIVE`, `GLOVE_REQUIRED`), `vision glove-reference` y la app las muestra. 107 tests pasan | RF-01, RF-04, RF-13 |
 | 2026-09-30 | Práctica por API: un fallo ya no reinicia la cuenta de correctas (ver Decisiones) | RF-10 |

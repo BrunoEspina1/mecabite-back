@@ -14,11 +14,7 @@ _feed: GloveFeed | None = None
 def start_glove_feed() -> GloveFeed | None:
     global _feed
     if settings.glove_live and _feed is None:
-        _feed = GloveFeed(
-            settings.glove_device_name,
-            settings.glove_characteristic_uuid,
-            emitter=settings.glove_emitter,
-        )
+        _feed = GloveFeed(settings.glove_device_name, settings.glove_characteristic_uuid)
         _feed.start()
     return _feed
 

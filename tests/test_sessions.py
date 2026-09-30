@@ -476,9 +476,9 @@ def test_a_required_glove_that_sends_nothing_pauses_the_practice(
 
 def test_sessions_read_the_ble_glove_feed(client: TestClient) -> None:
     class FakeFeed:
-        def recent(self, _window_ms: float) -> list[GloveReading]:
+        def recent(self, _window_ms: float, emitter: int = 1) -> list[GloveReading]:
             values = [0, 0, 0, 40, 0, 0, 3, 1, 2, 1, 3]  # mismo orden que el ESP32
-            return [GloveReading.from_values(0, values)]
+            return [GloveReading.from_values(0, values)] if emitter == 1 else []
 
     app.dependency_overrides[get_glove_feed] = FakeFeed
     session = create(client)
@@ -613,3 +613,49 @@ def test_only_the_other_hand_in_view_is_recognized_but_not_corrected(client: Tes
 
     assert all(reply["corrections"] == [] for reply in replies)
     assert any(reply["state"] == "confirmed" for reply in replies)
+
+
+class TwoGloves:
+    """Guante derecho (emisor 1) con el meñique estirado; izquierdo (emisor 2) en A."""
+
+    def recent(self, _window_ms: float, emitter: int = 1) -> list[GloveReading]:
+        fingers = [3, 1, 2, 1, 3] if emitter == 1 else [3, 1, 2, 1, 1]
+        return [GloveReading.from_values(0, [0, 0, 0, 0, 0, 0, *fingers])]
+
+
+@pytest.mark.parametrize(
+    ("dominant", "label", "message", "other_menique"),
+    [
+        # Vista en espejo: MediaPipe llama "Left" a la mano derecha de la persona.
+        ("right", "Left", "Encoge más el meñique", 1),
+        ("left", "Right", "Haz la seña A", 3),
+    ],
+)
+def test_each_hand_is_corrected_with_its_own_glove(
+    client: TestClient, dominant: str, label: str, message: str, other_menique: int
+) -> None:
+    app.dependency_overrides[get_glove_feed] = TwoGloves
+    session = create(client, dominant_hand=dominant)
+    hand = HAND | {"handedness": {"label": label, "score": 0.95}}
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        for sequence in range(18):
+            message_in = observation(sequence, sequence * FRAME_MS)
+            message_in["vision"]["hands"] = [hand]
+            websocket.send_json(message_in)
+            reply = websocket.receive_json()
+
+    assert reply["message"] == message
+    assert reply["glove"]["connected"] and reply["other_glove"]["connected"]
+    assert reply["other_glove"]["fingers"]["menique"] == other_menique
+
+
+def test_the_feed_keeps_each_glove_apart() -> None:
+    from app.vision.glove import GloveFeed
+
+    feed = GloveFeed("GuanteLSM", "uuid")
+    feed._store((1000, 1, [0] * 6 + [3, 3, 3, 3, 3]))
+    feed._store((1000, 2, [0] * 6 + [1, 1, 1, 1, 1]))
+    assert feed.recent(500, 1, now_ms=1200)[0].fingers["indice"] == 3
+    assert feed.recent(500, 2, now_ms=1200)[0].fingers["indice"] == 1
+    assert feed.recent(100, 2, now_ms=1200) == []

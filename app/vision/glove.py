@@ -161,35 +161,31 @@ class GloveReading:
 
 
 class GloveFeed(GloveCollector):
-    """Lector BLE para la API: guarda solo las lecturas recientes de un emisor.
+    """Lector BLE para la API: guarda solo las lecturas recientes de cada guante (emisor).
 
     Los paquetes llevan la hora de la laptop al llegar (no la del iPhone): cada observación
     toma las lecturas de los últimos milisegundos según el reloj del servidor.
     """
 
-    def __init__(
-        self,
-        device_name: str,
-        characteristic_uuid: str,
-        emitter: int = 1,
-        history: int = FEED_HISTORY,
-    ):
+    def __init__(self, device_name: str, characteristic_uuid: str, history: int = FEED_HISTORY):
         super().__init__(device_name, characteristic_uuid)
-        self.emitter = emitter
-        self._recent: deque[GloveReading] = deque(maxlen=history)
+        self._recent: dict[int, deque[GloveReading]] = {
+            emitter: deque(maxlen=history) for emitter in EMITTERS
+        }
 
     def _store(self, packet: tuple[int, int, list[float]]) -> None:
         t_ms, emitter, values = packet
-        if emitter != self.emitter:
-            return
         with self._lock:
-            self._recent.append(GloveReading.from_values(t_ms, values))
+            self._recent[emitter].append(GloveReading.from_values(t_ms, values))
 
-    def recent(self, window_ms: float, now_ms: float | None = None) -> list[GloveReading]:
-        """Lecturas de los últimos `window_ms`; vacío si el guante no manda nada."""
+    def recent(
+        self, window_ms: float, emitter: int = 1, now_ms: float | None = None
+    ) -> list[GloveReading]:
+        """Lecturas de un guante en los últimos `window_ms`; vacío si no manda nada."""
         now_ms = time.time() * 1000 if now_ms is None else now_ms
         with self._lock:
-            return [reading for reading in self._recent if now_ms - reading.t_ms <= window_ms]
+            readings = self._recent.get(emitter, ())
+            return [reading for reading in readings if now_ms - reading.t_ms <= window_ms]
 
 
 def write_packets(path: Path, packets: list[tuple[int, int, list[float]]]) -> None:

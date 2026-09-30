@@ -164,7 +164,12 @@ Pruebas rápidas para validar la orientación antes de integrar:
 
 El guante (ESP32) se conecta por **BLE a la laptop del backend** (`GLOVE_LIVE=true`), no al
 iPhone: **la app manda `glove: null`** y el backend toma las lecturas de los últimos
-`GLOVE_MAX_AGE_MS` (500 ms) según su reloj. Cada paquete BLE es una línea JSON:
+`GLOVE_MAX_AGE_MS` (500 ms) según su reloj. Hay **un guante por mano**: `emisor` 1 es el de la
+mano derecha y 2 el de la izquierda (`GLOVE_RIGHT_EMITTER` / `GLOVE_LEFT_EMITTER`). Se corrige
+con el guante de la mano que eligió la persona (`dominant_hand`; derecha si no eligió). La
+inclinación de referencia (`glove_reference.json`) se grabó con el guante derecho, así que con
+la izquierda como dominante no se dan correcciones de inclinación. Cada paquete BLE es una línea
+JSON:
 
 ```json
 {"emisor": 1, "valores": [0, 0, 0, 23, 0, 0, 3, 3, 3, 3, 3]}
@@ -519,10 +524,12 @@ mantiene 400 ms, para que no parpadee. En `rejected` son las que hicieron fallar
   de un componente del nivel: se responde `rejected` con ellas. En estáticas se puede corregir
   sin bajar la mano: se vuelve a evaluar al sostenerla otra vez.
 
-#### `glove`
+#### `glove` y `other_glove`
 
-`{"connected": false}` si no hay lecturas recientes; si hay, agrega `fingers` (1 a 3), `roll` y
-`pitch` (grados, mediana de los últimos 500 ms).
+`glove` es el guante de la mano dominante (el que se usa para corregir) y `other_glove` el de la
+otra mano (por ahora solo informativo). Cada uno es `{"connected": false}` si no hay lecturas
+recientes; si hay, agrega `fingers` (1 a 3), `roll` y `pitch` (grados, mediana de los últimos
+500 ms).
 
 - `sequence` indica a qué observación responde. Si el backend se atrasa puede saltarse
   observaciones viejas para no acumular retraso; con `sequence` la app correlaciona

@@ -1,9 +1,11 @@
 """Inclinación del guante con cada seña bien hecha: la referencia de las correcciones.
 
 El MPU no marca "palma al frente" en grados absolutos (depende de cómo quedó montado), así que
-se compara contra lo que midió el guante con la seña correcta. Sale de las grabaciones de
-`vision practica_guante` (data/practice/glove/<persona>/<seña>/<toma>/glove.csv) o de sostener
-la seña en vivo. Se guarda en app/catalog/glove_reference.json (separado del código, RNF-11).
+se compara contra lo que midió el guante con la seña correcta. Es la del guante de la mano
+derecha (GLOVE_RIGHT_EMITTER): la del izquierdo quedaría en espejo y no se usa. Sale de las
+grabaciones de `vision practica_guante` (data/practice/glove/<persona>/<seña>/<toma>/glove.csv)
+o de sostener la seña en vivo. Se guarda en app/catalog/glove_reference.json (separado del
+código, RNF-11).
 
 También compara los dedos grabados con `expected.glove_fingers` del catálogo para ajustarlo.
 """
@@ -62,16 +64,16 @@ def from_recordings(
 
 
 def from_live(sign_id: str, seconds: float, emitter: int = 1) -> dict:
-    feed = GloveFeed(settings.glove_device_name, settings.glove_characteristic_uuid, emitter)
+    feed = GloveFeed(settings.glove_device_name, settings.glove_characteristic_uuid)
     feed.start()
     try:
-        while not feed.recent(500):
+        while not feed.recent(500, emitter):
             if feed.error:
                 print(f"Error BLE: {feed.error}")
             time.sleep(0.5)
         input(f"Guante conectado. Haz la seña {sign_id!r} y presiona Enter para medir...")
         time.sleep(seconds)
-        readings = feed.recent(seconds * 1000)
+        readings = feed.recent(seconds * 1000, emitter)
     finally:
         feed.close()
     if not readings:
@@ -116,7 +118,7 @@ def save(reference: dict[str, dict], path: Path = REFERENCE_PATH) -> None:
 
 def run(sign: str | None, live: bool, seconds: float, glove_dir: Path) -> None:
     catalog = get_catalog()
-    emitter = settings.glove_emitter
+    emitter = settings.glove_right_emitter
     if live:
         found = catalog.find(sign or "")
         if found is None:

@@ -56,8 +56,8 @@ WRONG_CODE = {
     "orientation": "wrong_orientation",
     "localization": "wrong_localization",
 }
-# Pide las lecturas del guante de los últimos N ms (reloj del servidor).
-GloveSource = Callable[[float], list[GloveReading]]
+# Pide las lecturas de un guante (emisor) de los últimos N ms (reloj del servidor).
+GloveSource = Callable[[float, int], list[GloveReading]]
 
 
 class ObservationError(ValueError):
@@ -106,6 +106,10 @@ def glove_readings(glove: GloveIn) -> list[GloveReading]:
     return [GloveReading.from_values(time.time() * 1000, values)]
 
 
+def glove_json(state: GloveState | None) -> dict:
+    return {"connected": state is not None} | (state.to_json() if state else {})
+
+
 def app_text(message: str) -> str:
     for plain, accented in ACCENTS.items():
         message = message.replace(plain, accented)
@@ -152,12 +156,22 @@ class PracticeSession:
         self.target = target
         self.glove_source = glove_source
         self.glove_required = settings.glove_required if glove_required is None else glove_required
+        self.dominant_left = None if dominant_hand is None else dominant_hand == "left"
+        # Un guante por mano: se corrige con el de la mano dominante (derecha si no se eligió).
+        self.glove_emitter, self.other_glove_emitter = (
+            (settings.glove_left_emitter, settings.glove_right_emitter)
+            if self.dominant_left
+            else (settings.glove_right_emitter, settings.glove_left_emitter)
+        )
         self.glove: GloveState | None = None
+        self.other_glove: GloveState | None = None
         self.glove_history: deque[tuple[float, GloveState]] = deque(maxlen=512)
-        self.reference = glove_reference().get(target.id) if target else None
+        # La inclinación de referencia se grabó con el guante derecho: con el izquierdo no aplica.
+        self.reference = (
+            glove_reference().get(target.id) if target and not self.dominant_left else None
+        )
         self.filter = CorrectionFilter()
         self.live: list[Correction] = []  # correcciones estables del momento
-        self.dominant_left = None if dominant_hand is None else dominant_hand == "left"
         self.slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS, dominant_left=self.dominant_left)
         # La única mano a la vista es la no dominante: se reconoce, pero no se corrige (el guante
         # y `expected` describen la dominante).
@@ -206,9 +220,8 @@ class PracticeSession:
         feedback["corrections"] = [
             correction.to_json() for correction in self._shown(t_ms, detection is not None, status)
         ]
-        feedback["glove"] = {"connected": self.glove is not None} | (
-            self.glove.to_json() if self.glove else {}
-        )
+        feedback["glove"] = glove_json(self.glove)
+        feedback["other_glove"] = glove_json(self.other_glove)
 
         elapsed = (time.perf_counter() - started) * 1000
         self.processing_ms.append(elapsed)
@@ -506,10 +519,16 @@ class PracticeSession:
     # --- Ayudas -----------------------------------------------------------------------------
 
     def _read_glove(self, observation: ObservationIn, t_ms: float) -> GloveState | None:
+        """Guante de la mano dominante (el de la observación tiene prioridad) y el de la otra."""
+        window = settings.glove_max_age_ms
+        source = self.glove_source
+        self.other_glove = GloveState.from_readings(
+            source(window, self.other_glove_emitter) if source else []
+        )
         if observation.glove is not None:
             readings = glove_readings(observation.glove)
-        elif self.glove_source is not None:
-            readings = self.glove_source(settings.glove_max_age_ms)
+        elif source is not None:
+            readings = source(window, self.glove_emitter)
         else:
             readings = []
         state = GloveState.from_readings(readings)
