@@ -33,6 +33,7 @@ def test_level_defines_components_and_type_defines_timing() -> None:
     assert "movement" in j.required_components
     assert (j.hold_time_ms, j.max_duration_ms) == (None, 3000)
     assert "localization" in hola.required_components
+    assert (a.hands, hola.hands, catalog.get("gracias").hands) == (1, 1, 2)
     assert set(a.components) == {"configuration", "orientation", "localization", "movement"}
 
 
@@ -64,6 +65,7 @@ def test_vision_catalog_maps_folders_to_training_classes() -> None:
     assert catalog.dynamic_class("Ñ") == "Ñ"
     assert catalog.dynamic_class("K") == OTHER
     assert "K" in catalog.dynamic_folders
+    assert catalog.two_handed == {"gracias", "por_favor"}
 
 
 def test_vision_catalog_adds_training_only_alphabet() -> None:
@@ -90,3 +92,4 @@ def test_catalog_endpoint(client: TestClient) -> None:
     assert enie["type"] == "dynamic"
     assert enie["max_duration_ms"] == 3000
     assert enie["reference_asset"] == "enie.mp4"
+    assert {sign["id"] for sign in body["signs"] if sign["hands"] == 2} == {"gracias", "por_favor"}

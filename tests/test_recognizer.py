@@ -10,6 +10,7 @@ from app.vision.recognizer import (
     SignStabilizer,
     alphabet_key,
 )
+from app.vision.sequence import DynamicDetector
 
 HAND = (np.zeros((21, 3)), False)
 
@@ -111,3 +112,66 @@ def test_stabilizer_clears_after_one_second_without_sign() -> None:
 
 def test_alphabet_order_puts_enie_after_n() -> None:
     assert sorted(["O", "Ñ", "A", "N"], key=alphabet_key) == ["A", "N", "Ñ", "O"]
+
+
+# --- Señas de dos manos ----------------------------------------------------------------------
+
+
+def hand(x: float, y: float = 0.5) -> np.ndarray:
+    """Mano con la palma de 0.1 (muñeca -> nudillo medio) con la muñeca en (x, y)."""
+    points = np.zeros((21, 3))
+    points[:, :2] = (x, y)
+    points[9, 1] -= 0.1
+    return points
+
+
+def sliding(t_ms: float) -> np.ndarray:
+    """Quieta, se desliza 0.6 (seis palmas) entre 500 y 1000 ms y vuelve a quedarse quieta."""
+    return hand(0.4 + 0.6 * np.clip((t_ms - 500) / 500, 0, 1))
+
+
+def still(_t_ms: float) -> np.ndarray:
+    return hand(1.3)
+
+
+def two_hands_recognizer(moving_label: str = "gracias") -> Recognizer:
+    dynamic = FakeClassifier(moving_label)
+    two_handed = frozenset({"gracias"})
+    return Recognizer(
+        FakeClassifier(OTHER),
+        DynamicDetector(dynamic, OTHER, two_handed),
+        DynamicDetector(dynamic, OTHER, two_handed, two_handed_only=True),
+    )
+
+
+def play(recognizer: Recognizer, primary, second=None) -> tuple[list[str], list[str]]:
+    """Dos segundos a 30 fps. Devuelve las señas confirmadas y las descartadas por una mano."""
+    confirmed, rejected = [], []
+    for t_ms in np.arange(0, 2000, 1000 / 30):
+        other = (second(t_ms), True) if second else None
+        sign = recognizer.update((primary(t_ms), False), 1.0, t_ms, other)
+        confirmed += [sign] if sign else []
+        rejected += [recognizer.rejected] if recognizer.rejected else []
+    return confirmed, rejected
+
+
+def test_two_handed_sign_with_one_hand_is_rejected() -> None:
+    assert play(two_hands_recognizer(), sliding) == ([], ["gracias"])
+
+
+def test_two_handed_sign_counts_once_with_the_other_hand() -> None:
+    assert play(two_hands_recognizer(), sliding, still) == (["gracias"], [])
+
+
+def test_two_handed_sign_made_by_the_second_hand() -> None:
+    # Gracias: la mano que apareció primero se queda quieta de base y la otra se mueve.
+    recognizer = two_hands_recognizer()
+
+    assert play(recognizer, still, sliding) == (["gracias"], [])
+    assert len(recognizer.moving_detector.frames()) > 0
+    assert recognizer.moving_detector is recognizer.second_detector
+
+
+def test_letters_are_only_read_from_the_main_hand() -> None:
+    assert play(two_hands_recognizer("J"), still, sliding) == ([], [])
+    assert play(two_hands_recognizer("J"), sliding, still) == (["J"], [])

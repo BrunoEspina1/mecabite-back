@@ -7,6 +7,10 @@ da igual si los cuadros llegan a 30 fps desde la webcam o a 15 Hz por la red.
 Estáticas: el modelo estático vota cuadro por cuadro durante VOTE_MS y la seña ganadora se
 confirma al sostenerla HOLD_SECONDS (RF-06). Con movimiento: el modelo dinámico la confirma al
 terminar la trayectoria (RF-07).
+
+Las letras se reconocen con la mano principal. Las señas de dos manos del catálogo (gracias,
+por favor) se siguen en cualquiera de las dos, porque en algunas una mano queda quieta de
+base, y solo cuentan si la otra mano también participa.
 """
 
 from __future__ import annotations
@@ -17,9 +21,9 @@ from pathlib import Path
 import numpy as np
 
 from app.core.config import settings
-from app.vision.catalog import OTHER
+from app.vision.catalog import OTHER, load_catalog
 from app.vision.classifier import SignClassifier
-from app.vision.features import landmarks_to_vector
+from app.vision.features import Hand, landmarks_to_vector
 from app.vision.sequence import DynamicDetector
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -82,9 +86,15 @@ class Recognizer:
     del catálogo de la app (`app.catalog`) le toca a quien lo use.
     """
 
-    def __init__(self, classifier: SignClassifier, detector: DynamicDetector | None = None):
+    def __init__(
+        self,
+        classifier: SignClassifier,
+        detector: DynamicDetector | None = None,
+        second_detector: DynamicDetector | None = None,
+    ):
         self.classifier = classifier
-        self.detector = detector
+        self.detector = detector  # mano principal: todas las señas con movimiento
+        self.second_detector = second_detector  # segunda mano: solo señas de dos manos
         self.reset()
 
     @classmethod
@@ -93,12 +103,16 @@ class Recognizer:
     ) -> Recognizer:
         if not static_path.exists():
             raise FileNotFoundError("No hay modelo. Ejecuta primero: vision train")
-        detector = None
+        detector = second_detector = None
         if dynamic_path.exists():
-            detector = DynamicDetector(SignClassifier.load(dynamic_path), OTHER)
+            dynamic = SignClassifier.load(dynamic_path)
+            two_handed = load_catalog().two_handed & set(dynamic.labels)
+            detector = DynamicDetector(dynamic, OTHER, two_handed)
+            if two_handed:
+                second_detector = DynamicDetector(dynamic, OTHER, two_handed, two_handed_only=True)
         else:
             print("Aviso: sin modelo dinámico, solo se reconocen señas estáticas.")
-        return cls(SignClassifier.load(static_path), detector)
+        return cls(SignClassifier.load(static_path), detector, second_detector)
 
     @property
     def signs(self) -> list[str]:
@@ -119,25 +133,45 @@ class Recognizer:
             return None
         return sum(self.hands) > len(self.hands) / 2
 
+    @property
+    def moving(self) -> bool:
+        """Alguna mano está a media trayectoria."""
+        return any(d is not None and d.moving for d in (self.detector, self.second_detector))
+
+    @property
+    def moving_detector(self) -> DynamicDetector | None:
+        """Detector de la última seña con movimiento confirmada (sus cuadros son esa seña)."""
+        return self._moved or self.detector
+
     def reset(self) -> None:
         self.votes: deque[tuple[float, str | None]] = deque()
         self.hands: deque[bool] = deque(maxlen=HAND_VOTES)
         self.stabilizer = SignStabilizer()
         self.frame_label: tuple[str, float] | None = None
-        if self.detector is not None:
-            self.detector.reset()
+        self.rejected: str | None = None
+        self.last_movement: tuple[str, float] | None = None  # última trayectoria clasificada
+        self._moved: DynamicDetector | None = None
+        for detector in (self.detector, self.second_detector):
+            if detector is not None:
+                detector.reset()
 
     def update(
         self,
-        detection: tuple[np.ndarray, bool] | None,
+        detection: Hand | None,
         handedness_score: float,
         t_ms: float,
+        other: Hand | None = None,
+        body: np.ndarray | None = None,
     ) -> str | None:
         """Procesa un cuadro. Devuelve la seña en el instante en que se confirma.
 
-        `detection`: (21 puntos, mano izquierda) como los entrega `HandTracker` (unidades de la
-        altura de la imagen, vista en espejo), o None si no hay mano. `handedness_score`: score
-        de MediaPipe para la etiqueta de mano. `t_ms`: tiempo del cuadro, creciente.
+        `detection`: (21 puntos, mano izquierda) de la mano principal como los entrega
+        `HandTracker` (unidades de la altura de la imagen, vista en espejo), o None si no hay
+        mano. `handedness_score`: score de MediaPipe para la etiqueta de mano. `t_ms`: tiempo
+        del cuadro, creciente. `other`: la segunda mano y `body`: los 33 puntos del cuerpo, si
+        se ven; sin ellos, las señas de dos manos no se aceptan.
+
+        Si en este cuadro se descartó una seña de dos manos hecha con una, queda en `rejected`.
         """
         now = t_ms / 1000
         if detection:
@@ -156,13 +190,26 @@ class Recognizer:
             self.votes.popleft()
 
         new_sign = self.stabilizer.update(self._voted(), now)
-        if self.detector is not None:
-            points, is_left = detection if detection else (None, False)
-            moving_sign = self.detector.push(t_ms, points, is_left)
+        self.rejected = None
+        slots = ((self.detector, detection, other), (self.second_detector, other, detection))
+        for detector, hand, partner in slots:
+            if detector is None:
+                continue
+            points, is_left = hand if hand else (None, False)
+            before = detector.last
+            moving_sign = detector.push(t_ms, points, is_left, partner, body)
+            if detector.last is not before:
+                self.last_movement = detector.last
+            self.rejected = self.rejected or detector.rejected
             if moving_sign is not None:
                 self.stabilizer.force(moving_sign, now)
                 self.votes.clear()
-                new_sign = moving_sign
+                self._moved = detector
+                # Si las dos manos se movían (por favor), la otra no la vuelve a contar.
+                for rest in (self.detector, self.second_detector):
+                    if rest is not None and rest is not detector:
+                        rest.reset()
+                return moving_sign
         return new_sign
 
     def progress(self, t_ms: float) -> float:

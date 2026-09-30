@@ -19,6 +19,7 @@
     }
   ],
   "_nota_sign_types": "El tiempo que hay que sostener una estática (RF-06) no va aquí: se configura con VISION_HOLD_MS en .env y la API lo reporta como hold_time_ms.",
+  "_nota_hands": "`hands`: 2 si la seña usa las dos manos (si falta, 1). Con una sola mano no se acepta aunque el movimiento sea correcto.",
   "sign_types": {
     "static": { "max_duration_ms": null },
     "dynamic": { "max_duration_ms": 3000 }
@@ -161,6 +162,7 @@
       "level": 3,
       "type": "dynamic",
       "data_label": "gracias",
+      "hands": 2,
       "reference_asset": "gracias.mp4",
       "validated": false,
       "components": {}
@@ -171,6 +173,7 @@
       "level": 3,
       "type": "dynamic",
       "data_label": "por_favor",
+      "hands": 2,
       "reference_asset": "por_favor.mp4",
       "validated": false,
       "components": {}

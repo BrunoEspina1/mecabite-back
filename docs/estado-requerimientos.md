@@ -50,7 +50,7 @@ que funciona con datos del iPhone vía REST o WebSocket, que es lo que pide el M
 | RF-06 | Estática válida al sostenerla ≥ 1 s | 🟡 Parcial | `SignStabilizer` en `app/vision/recognizer.py`, sin cámara y con el tiempo de cada cuadro (`tests/test_recognizer.py`). Tiempo configurable con `VISION_HOLD_MS`: 1000 por defecto; la API lo reporta como `hold_time_ms` | **El `.env` local usa 200 ms**; el requerimiento pide 1 s: decisión pendiente. Con 0.2 s se confirman formas intermedias de las dinámicas (I al inicio de la J, L al inicio de Z/Q/X, N al inicio de la Ñ). Por API |
 | RF-07 | Dinámica: trayectoria completa en ≤ 3 s | 🟡 Parcial | Modelo dinámico sobre ventana de 2 s; `Recognizer` lo combina con el estático sin cámara. Con videos grabados reconoce J, Z, Q, X y Ñ | Por API; decidir si un clasificador cuenta como "patrón de referencia" o se agregan plantillas al catálogo |
 | RF-08 | Evaluar solo los componentes del nivel | 🟡 Parcial | Niveles y componentes definidos en el catálogo y en `GET /catalog/signs` | Que el motor evalúe por nivel. El texto del nivel 3 es ambiguo ("se agregan localización y movimiento") |
-| RF-09 | Catálogo exclusivo de 15 señas en 3 niveles | 🟡 Parcial | `signs.json` + `GET /catalog/signs` (`tests/test_catalog.py`); letras extra fuera de la API | **No hay datos de las 5 palabras**: el nivel 3 no se reconoce |
+| RF-09 | Catálogo exclusivo de 15 señas en 3 niveles | 🟡 Parcial | `signs.json` + `GET /catalog/signs` (`tests/test_catalog.py`); letras extra fuera de la API | Hay datos de 4 palabras (glosas de Zenodo, 12 personas); **falta mamá** y la localización en el modelo (gracias 47 %) |
 | RF-10 | Aprobada con 3 correctas consecutivas | 🟡 Parcial | Webcam: `live --target` cuenta intentos (el conteo aún vive en `teacher.py`) | Por API, con estado `approved` |
 | RF-11 | Video de referencia y descripción de componentes | 🟡 Parcial | Campos en el catálogo; borradores de 7 señas (`validated: false`) | Descripciones de Ñ, Q, X y palabras; grabar los 15 videos; validación del intérprete |
 | RF-12 | Modo práctica en tiempo real | 🟡 Parcial | Webcam: `vision live --target`, `vision practice` | `POST /sessions` + WebSocket (modo `practice`) |
@@ -80,7 +80,6 @@ En orden de prioridad para el MVP.
 
 | # | Actividad | Área | Requerimientos | Depende de |
 | --- | --- | --- | --- | --- |
-| 1 | Hacer commit del trabajo actual (hay más de 15 archivos sin commit) | Repo | — | — |
 | 4 | Convertir las observaciones del iPhone al formato de entrenamiento (proporción, espejo, mano) | Backend | RF-03 | 3; JSON real de móvil |
 | 5 | Sesión de práctica y demo: estados, 3 consecutivas, `feedback_code`, ids del catálogo | Backend | RF-10, RF-12, RF-14 | 3 |
 | 6 | `POST /sessions` + WebSocket | Backend | RF-12, RF-14, RNF-01 | 4, 5 |
@@ -88,7 +87,7 @@ En orden de prioridad para el MVP.
 | 8 | `vision simulate` + `POST /simulations/predict` con evaluador por reglas | Backend | RF-15, RF-01 | 5 |
 | 9 | Orientación explícita (normal de la palma) para reportar el componente | Visión | RF-13 | — |
 | 10 | Evaluación por intento y por nivel | Visión | RNF-03, RNF-04 | — |
-| 11 | Datos de las 5 palabras (buscar dataset o grabar con mano + cuerpo) | Visión | RF-09, RF-03 | Intérprete |
+| 11 | Palabras: 4 de 5 importadas; falta mamá (grabar o validar Mendeley/MSL-150) y agregar localización (cuerpo) y ventana de 3 s al modelo | Visión | RF-09, RF-03 | Intérprete |
 | 12 | Encuadre y localización por API (`pose_landmarks`) | Backend | RF-02, RF-03 | 6 |
 | 13 | Contrato: `pose_landmarks` en **todos** los niveles (hoy dice `null` en 1 y 2); móvil ya lo implementa | Contrato + Móvil | RF-02, RF-03 | — |
 
@@ -116,6 +115,8 @@ En orden de prioridad para el MVP.
 
 | Fecha | Qué se hizo | Requerimientos |
 | --- | --- | --- |
+| 2026-09-29 | Palabras del nivel 3 desde el dataset de glosas de Zenodo (CC-BY 4.0, 12 personas, video): `vision import-glosses` importa hola, gracias, por_favor y ayuda con mano y cuerpo, recortadas al movimiento. Acierto con personas nuevas: por_favor 90 %, hola 74 %, ayuda 69 %, gracias 47 % (se descarta como `otra`: le falta localización). Mamá pendiente: Mendeley solo tiene fotos sueltas y la etiqueta en inglés ("Mother") | RF-09, RF-03 |
+| 2026-09-29 | Commit del trabajo acumulado (`6b3782e`) | — |
 | 2026-09-29 | Ajustes del reconocimiento en `.env` (`VISION_HOLD_MS`, `VISION_CONFIDENCE_THRESHOLD`, `VISION_VOTE_MS`, documentados en `.env.example`). `hold_time_ms` del catálogo sale del mismo valor | RF-06, RNF-11 |
 | 2026-09-29 | `Recognizer` y `SignStabilizer` pasan a `app/vision/recognizer.py`: sin cámara, todo con el `t_ms` de cada cuadro y votos por tiempo (400 ms) en vez de 12 cuadros, así se comporta igual a 30 fps (webcam) que a 15 Hz (iPhone). `teacher.py` solo dibuja. 43 tests pasan | RF-06, RF-07, RNF-01 |
 | 2026-09-29 | Grabaciones propias pesan ×5 al entrenar (`OWN_WEIGHT`) y `vision train` reporta el acierto con ellas sin haberlas visto (hoy: estático 91.0 %, dinámico 74.4 %, con 1 repetición por letra) | RNF-03 |

@@ -24,16 +24,18 @@ import shutil
 import time
 import unicodedata
 from collections import Counter, deque
+from collections.abc import Iterator
 from pathlib import Path
 
 import cv2
 import numpy as np
 from sklearn.model_selection import GroupKFold
 
+from app.catalog import load_catalog as load_sign_catalog
 from app.vision.body import BodyStatus, body_status
 from app.vision.catalog import OTHER, Catalog, load_catalog
 from app.vision.classifier import BACKENDS, SignClassifier, make_backend
-from app.vision.features import NUM_LANDMARKS, landmarks_to_vector
+from app.vision.features import NUM_LANDMARKS, Hand, landmarks_to_vector
 from app.vision.recognizer import (
     CONFIDENCE_THRESHOLD,
     DYNAMIC_MODEL_PATH,
@@ -46,8 +48,12 @@ from app.vision.sequence import (
     CONFIDENCE_THRESHOLD as DYNAMIC_THRESHOLD,
 )
 from app.vision.sequence import (
+    END_STILL_MS,
+    MOVING_SPEED,
+    SPEED_LAG_MS,
     WINDOW_SECONDS,
     augment,
+    hand_speed,
     held_pose,
     load_sequence,
     sequence_features,
@@ -56,6 +62,7 @@ from app.vision.sequence import (
 from app.vision.tracker import (
     NUM_BODY_LANDMARKS,
     BodyTracker,
+    HandSlots,
     HandTracker,
     draw_body,
     draw_hand,
@@ -70,9 +77,15 @@ NEGATIVE_SAMPLES = 1500  # de cada tipo: forma quieta y cambio de forma
 # Grabaciones propias (collect/practice): son pocas frente a los datasets, pero son justo la
 # cámara y la forma de hacer las señas que importan en vivo; cuentan este número de veces.
 OWN_WEIGHT = 5
-DATASET_PERSON = re.compile(r"S\d+")  # personas de MSL-ABC y MSL-dynamic-signs
+# Personas de los datasets: S (MSL-ABC y MSL-dynamic-signs), G (glosas de Zenodo) y
+# M (249 palabras de Mendeley). Cualquier otro nombre es una grabación propia.
+DATASET_PERSON = re.compile(r"[SGM]\d+")
 VIDEO_NAME = re.compile(r"^(S\d+)-([^-]+)-", re.IGNORECASE)
-PERSON_ID = re.compile(r"(?:^|_)(S\d+)(?:-|$)")
+PERSON_ID = re.compile(r"(?:^|_)([SGM]\d+)(?:-|$)")
+GLOSS_VIDEO = re.compile(r"^(.+)_(\d+)$")  # HOLA_3.mp4: glosa y persona (desde 0)
+# Pocas grabaciones por seña (palabras): se generan más variaciones para que la clase pese
+# como las letras, que traen cientos.
+MIN_CLASS_RECORDINGS = 100
 HEADER = ["t_ms", "is_left"] + [
     f"{axis}{index}" for index in range(NUM_LANDMARKS) for axis in "xyz"
 ]
@@ -80,7 +93,12 @@ HEADER = ["t_ms", "is_left"] + [
 BODY_HEADER = [
     f"body_{axis}{index}" for index in range(NUM_BODY_LANDMARKS) for axis in ("x", "y", "z", "v")
 ]
-RECORD_HEADER = HEADER + BODY_HEADER
+# La otra mano (señas de dos manos, como gracias); vacía si no se vio.
+OTHER_HEADER = ["other_is_left"] + [
+    f"other_{axis}{index}" for index in range(NUM_LANDMARKS) for axis in "xyz"
+]
+RECORD_HEADER = HEADER + BODY_HEADER + OTHER_HEADER
+SECOND_HAND_COLOR = (230, 160, 60)  # la otra mano se dibuja en azul
 SIGN_BOX = 170
 # Datos de `vision practice`: carpeta propia para que `vision clear` nunca toque los datasets.
 PRACTICE_DIR = ROOT_DIR / "data" / "practice"
@@ -97,11 +115,18 @@ def _draw_text(frame: np.ndarray, text: str, y: int, color=(255, 255, 255)) -> N
 
 
 def _record_row(
-    t_ms: int, points: np.ndarray, is_left: bool, body: np.ndarray | None
+    t_ms: int,
+    points: np.ndarray,
+    is_left: bool,
+    body: np.ndarray | None,
+    other: Hand | None = None,
 ) -> list[object]:
     body_values = np.round(body.flatten(), 6).tolist() if body is not None else []
     body_values += [""] * (len(BODY_HEADER) - len(body_values))
-    return [t_ms, int(is_left), *np.round(points.flatten(), 6), *body_values]
+    other_values: list[object] = [""] * len(OTHER_HEADER)
+    if other is not None:
+        other_values = [int(other[1]), *np.round(other[0].flatten(), 6)]
+    return [t_ms, int(is_left), *np.round(points.flatten(), 6), *body_values, *other_values]
 
 
 class BodyView:
@@ -162,8 +187,11 @@ def collect(label: str, participant: str, camera: int, body_enabled: bool = True
             if detection:
                 points, is_left = detection
                 draw_hand(frame, points)
+                if tracker.other:
+                    draw_hand(frame, tracker.other[0], SECOND_HAND_COLOR)
                 if writer:
-                    writer.writerow(_record_row(timestamp, points, is_left, body_view.body))
+                    row = _record_row(timestamp, points, is_left, body_view.body, tracker.other)
+                    writer.writerow(row)
                     frames += 1
             body_view.draw(frame)
 
@@ -270,8 +298,163 @@ def import_videos(source: Path, stride: int, overwrite: bool) -> None:
     print("Resumen: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
 
 
+def _video_frames(path: Path, target_fps: float = 30.0) -> Iterator[tuple[int, np.ndarray]]:
+    """Cuadros de un video con su tiempo en ms, a lo más `target_fps` por segundo."""
+    capture = cv2.VideoCapture(str(path))
+    fps = capture.get(cv2.CAP_PROP_FPS) or target_fps
+    stride = max(1, round(fps / target_fps))
+    index = 0
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if index % stride == 0:
+                yield int(index * 1000 / fps), frame
+            index += 1
+    finally:
+        capture.release()
+
+
+def _image_frames(folder: Path, fps: float) -> Iterator[tuple[int, np.ndarray]]:
+    """Secuencia de fotos (JPG/PNG, en orden de nombre) como si fueran cuadros a `fps`."""
+    images = sorted(p for p in folder.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    for index, path in enumerate(images):
+        frame = cv2.imread(str(path))
+        if frame is not None:
+            yield int(index * 1000 / fps), frame
+
+
+# (t_ms, puntos, mano izquierda, cuerpo, la otra mano)
+Row = tuple[int, np.ndarray, bool, np.ndarray | None, Hand | None]
+
+
+def _hand_coverage(hands: list[Hand | None]) -> float:
+    """Área cubierta por la mano, ignorando el 10 % exterior de las observaciones.
+
+    El recorrido acumulado puede favorecer una mano quieta con ruido o una mano que cruza varias
+    veces el mismo sitio. La caja de todos sus landmarks mide el espacio realmente ocupado y
+    sigue funcionando aunque MediaPipe pierda cuadros durante el movimiento.
+    """
+    observed = [hand[0][:, :2] for hand in hands if hand is not None]
+    if not observed:
+        return 0.0
+    landmarks = np.concatenate(observed, axis=0)
+    low, high = np.percentile(landmarks, [10, 90], axis=0)
+    return float(np.prod(high - low))
+
+
+def _track_sequence(frames: Iterator[tuple[int, np.ndarray]]) -> list[Row]:
+    """Manos y cuerpo de cada cuadro, volteado como la webcam. Solo cuadros con mano.
+
+    Se siguen las dos manos y queda como principal la que más se mueve: en gracias una mano
+    se queda quieta de base y la seña la hace la otra."""
+    tracker, body, slots = HandTracker(), BodyTracker(), HandSlots()
+    tracked = []
+    try:
+        for t_ms, frame in frames:
+            frame = cv2.flip(frame, 1)
+            hands = [hand[:2] for hand in tracker.detect_hands(frame, t_ms)]
+            tracked.append((t_ms, slots.assign(hands, t_ms), body.detect(frame, t_ms)))
+    finally:
+        tracker.close()
+        body.close()
+    active = max((0, 1), key=lambda slot: _hand_coverage([hands[slot] for _, hands, _ in tracked]))
+    return [
+        (t_ms, *hands[active], pose, hands[1 - active])
+        for t_ms, hands, pose in tracked
+        if hands[active] is not None
+    ]
+
+
+def _trim_to_motion(rows: list[Row]) -> list[Row]:
+    """Quita la quietud antes y después de la seña, como la ve el detector en vivo: desde medio
+    segundo antes de que la mano empiece a moverse hasta que se queda quieta."""
+    if len(rows) < 3:
+        return rows
+    times = np.array([row[0] for row in rows], dtype=float)
+    moving = []
+    for index, (t_ms, points, *_) in enumerate(rows):
+        earlier = int(np.searchsorted(times, t_ms - SPEED_LAG_MS, side="right")) - 1
+        speed = 0.0
+        if 0 <= earlier < index:
+            speed = hand_speed(rows[earlier][1], points, t_ms - times[earlier])
+        moving.append(speed >= MOVING_SPEED)
+    indices = np.flatnonzero(moving)
+    if not len(indices):
+        return rows
+    start, end = times[indices[0]] - 500, times[indices[-1]] + END_STILL_MS + 50
+    return [row for row in rows if start <= row[0] <= end]
+
+
+def _write_record(path: Path, rows: list[Row]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as file_handle:
+        writer = csv.writer(file_handle)
+        writer.writerow(RECORD_HEADER)
+        writer.writerows(_record_row(*row) for row in rows)
+
+
+def import_glosses(source: Path, overwrite: bool) -> None:
+    """Dataset de glosas de Zenodo: `<GLOSA>/<GLOSA>_<persona>.mp4`. Solo importa las glosas
+    que están en el catálogo de la app (HOLA -> hola, POR_FAVOR -> por_favor, ...)."""
+    signs = load_sign_catalog()
+    videos = sorted(source.rglob("*.mp4"))
+    if not videos:
+        raise SystemExit(f"No se encontraron videos .mp4 en {source}")
+    stats = Counter()
+    for number, video_path in enumerate(videos, start=1):
+        match = GLOSS_VIDEO.match(unicodedata.normalize("NFC", video_path.stem))
+        sign = signs.find(match.group(1)) if match else None
+        if sign is None:
+            stats["fuera_del_catalogo"] += 1
+            continue
+        person = f"G{int(match.group(2)) + 1:02d}"
+        label = sign.data_label
+        output_path = DATA_DIR / label / f"{person}-{label}-glosas.csv"
+        if output_path.exists() and not overwrite:
+            stats["existentes"] += 1
+            continue
+        rows = _trim_to_motion(_track_sequence(_video_frames(video_path)))
+        if not rows:
+            print(f"  [{number}/{len(videos)}] sin manos detectadas: {video_path.name}")
+            stats["sin_manos"] += 1
+            continue
+        _write_record(output_path, rows)
+        stats["importados"] += 1
+        seconds = (rows[-1][0] - rows[0][0]) / 1000
+        print(f"  [{number}/{len(videos)}] {label}: {len(rows)} cuadros, {seconds:.1f} s")
+    print("Resumen: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
+
+
+def import_frames(source: Path, label: str, fps: float, prefix: str, overwrite: bool) -> None:
+    """Secuencias de fotos: una subcarpeta por persona (ej. Mendeley 249 palabras). Las
+    personas quedan como `<prefix>01`, `<prefix>02`...; `fps` es el ritmo supuesto de las fotos."""
+    folders = sorted(folder for folder in source.iterdir() if folder.is_dir())
+    if not folders:
+        raise SystemExit(f"No hay subcarpetas (una por persona) en {source}")
+    label = unicodedata.normalize("NFC", label)
+    stats = Counter()
+    for number, folder in enumerate(folders, start=1):
+        person = f"{prefix}{number:02d}"
+        output_path = DATA_DIR / label / f"{person}-{label}-{source.name}.csv"
+        if output_path.exists() and not overwrite:
+            stats["existentes"] += 1
+            continue
+        rows = _trim_to_motion(_track_sequence(_image_frames(folder, fps)))
+        if len(rows) < 3:
+            print(f"  [{number}/{len(folders)}] muy pocos cuadros con mano: {folder.name}")
+            stats["sin_manos"] += 1
+            continue
+        _write_record(output_path, rows)
+        stats["importados"] += 1
+        print(f"  [{number}/{len(folders)}] {label}: {len(rows)} cuadros <- {folder.name}")
+    print("Resumen: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
+
+
 def _person(stem: str) -> str:
-    """`msl-abc__S3`, `S3-J-frontal-1` -> "S3"; `p01_1759...` -> "p01"."""
+    """`msl-abc__S3`, `S3-J-frontal-1` -> "S3"; `G05-hola-glosas` -> "G05";
+    `p01_1759...` -> "p01"."""
     match = PERSON_ID.search(stem)
     return match.group(1) if match else stem.split("_")[0]
 
@@ -341,14 +524,19 @@ def load_dynamic_dataset(
             mirrored[:, 0] = -mirrored[:, 0]
         return mirrored
 
+    recordings = Counter(
+        folder for folder, label_dir in _label_dirs() for _ in label_dir.glob("*.csv")
+    )
     for folder, label_dir in _label_dirs():
         dynamic = folder in catalog.dynamic_folders
+        # Señas con pocas grabaciones (palabras): más variaciones para que pesen como las letras.
+        scarce = max(1, round(MIN_CLASS_RECORDINGS / max(recordings[folder], 1)))
         for path in sorted(label_dir.glob("*.csv")):
             person = _person(path.stem)
             t_ms, points_seq, is_left = load_sequence(path)
             if dynamic and len(points_seq) >= 3:
                 # Las propias cuentan más: más variaciones de velocidad y pausas.
-                variants = DYNAMIC_VARIANTS * (OWN_WEIGHT if _is_own(person) else 1)
+                variants = DYNAMIC_VARIANTS * (OWN_WEIGHT if _is_own(person) else scarce)
                 for _ in range(variants):
                     augmented = augment(t_ms, points_seq, rng)
                     add(*augmented, is_left, catalog.dynamic_class(folder), person)
@@ -510,12 +698,11 @@ def _draw_recognizer(frame: np.ndarray, recognizer: Recognizer, t_ms: float) -> 
         _draw_text(frame, f"Cuadro: {_ascii(label)} ({confidence:.0%}) | mano {hand}", 32)
     else:
         _draw_text(frame, "No se detecta una mano", 32, (0, 200, 255))
-    detector = recognizer.detector
-    if detector is not None:
-        if detector.moving:
+    if recognizer.detector is not None:
+        if recognizer.moving:
             _draw_text(frame, "Movimiento: siguiendo la trayectoria...", 108, (0, 200, 255))
-        elif detector.last:
-            moving_label, moving_confidence = detector.last
+        elif recognizer.last_movement:
+            moving_label, moving_confidence = recognizer.last_movement
             _draw_text(
                 frame,
                 f"Ultimo movimiento: {_ascii(moving_label)} ({moving_confidence:.0%})",
@@ -525,6 +712,33 @@ def _draw_recognizer(frame: np.ndarray, recognizer: Recognizer, t_ms: float) -> 
     _draw_sign_box(frame, stabilizer.confirmed, stabilizer.candidate, recognizer.progress(t_ms))
 
 
+def _resolve_signs(names: list[str], known: list[str]) -> list[str]:
+    """Nombres escritos por la persona -> clases del modelo, sin importar mayúsculas ni
+    espacios: `hola`, `HOLA` -> hola; `por favor` -> por_favor; `ñ` -> Ñ."""
+
+    def key(name: str) -> str:
+        return unicodedata.normalize("NFC", name).strip().casefold().replace(" ", "_")
+
+    by_key = {key(sign): sign for sign in known}
+    unknown = [name for name in names if key(name) not in by_key]
+    if unknown:
+        raise SystemExit(
+            f"El modelo no reconoce: {', '.join(unknown)}. Disponibles: {' '.join(known)}"
+        )
+    return [by_key[key(name)] for name in names]
+
+
+def _draw_hands(frame: np.ndarray, detection: Hand | None, other: Hand | None) -> None:
+    if detection:
+        draw_hand(frame, detection[0])
+    if other:
+        draw_hand(frame, other[0], SECOND_HAND_COLOR)
+
+
+def _two_hands_message(sign: str) -> str:
+    return f"{_ascii(sign)} se hace con las dos manos: levanta tambien la otra"
+
+
 def live(target: str | None, camera: int, body_enabled: bool = True) -> None:
     """Sin `target` funciona como demo: solo muestra la seña reconocida.
 
@@ -532,6 +746,8 @@ def live(target: str | None, camera: int, body_enabled: bool = True) -> None:
     frente, con cara y hombros a la vista): si no, se indica qué corregir (RF-13).
     """
     recognizer = _load_recognizer()
+    if target is not None:
+        target = _resolve_signs([target], recognizer.signs)[0]
     tracker, capture = HandTracker(), open_camera(camera)
     body_view = BodyView(body_enabled)
     consecutive_correct = 0
@@ -547,12 +763,15 @@ def live(target: str | None, camera: int, body_enabled: bool = True) -> None:
             timestamp = int(time.time() * 1000)
             detection = tracker.detect(frame, timestamp)
             body_view.update(frame, timestamp, detection[0] if detection else None)
-            if detection:
-                draw_hand(frame, detection[0])
-            new_sign = recognizer.update(detection, tracker.handedness_score, timestamp)
+            _draw_hands(frame, detection, tracker.other)
+            new_sign = recognizer.update(
+                detection, tracker.handedness_score, timestamp, tracker.other, body_view.body
+            )
             _draw_recognizer(frame, recognizer, timestamp)
             body_view.draw(frame)
 
+            if recognizer.rejected:
+                feedback = (_two_hands_message(recognizer.rejected), (0, 200, 255), now + 2.0)
             if target is not None and new_sign is not None:
                 if new_sign == target and not body_view.framed:
                     consecutive_correct = 0
@@ -601,17 +820,18 @@ def _practice_rows(
     target: str,
     forced: bool,
     recognizer: Recognizer,
-    hand_frames: deque[tuple[int, np.ndarray, bool, str]],
+    hand_frames: deque[tuple[int, np.ndarray, bool, Hand | None, str]],
     now_ms: int,
-) -> list[tuple[int, np.ndarray, bool]]:
-    """Cuadros a guardar: la seña completa si es con movimiento; si es estática, los del
-    último HOLD_SECONDS en que el modelo vio la letra pedida (o todos, si se forzó)."""
+) -> list[tuple[int, np.ndarray, bool, Hand | None]]:
+    """Cuadros a guardar (t_ms, puntos, mano izquierda, la otra mano): la seña completa si es
+    con movimiento; si es estática, los del último HOLD_SECONDS en que el modelo vio la letra
+    pedida (o todos, si se forzó)."""
     if recognizer.is_dynamic(target):
-        return recognizer.detector.frames()
+        return recognizer.moving_detector.frames()
     since = now_ms - (HOLD_SECONDS * 1000 + 300)
     return [
-        (t_ms, points, is_left)
-        for t_ms, points, is_left, label in hand_frames
+        (t_ms, points, is_left, other)
+        for t_ms, points, is_left, other, label in hand_frames
         if t_ms >= since and (forced or label == target)
     ]
 
@@ -660,8 +880,8 @@ def _capture_meta(
 ) -> dict[str, object]:
     """Datos del momento de la captura, para revisar o limpiar el dataset después."""
     prediction = None
-    if recognizer.is_dynamic(target) and recognizer.detector.last:
-        prediction = recognizer.detector.last
+    if recognizer.is_dynamic(target) and recognizer.moving_detector.last:
+        prediction = recognizer.moving_detector.last
     elif recognizer.frame_label:
         prediction = recognizer.frame_label
     models = {
@@ -688,7 +908,7 @@ def _capture_meta(
 def _save_practice(
     target: str,
     participant: str,
-    rows: list[tuple[int, np.ndarray, bool]],
+    rows: list[tuple[int, np.ndarray, bool, Hand | None]],
     image: np.ndarray,
     clip_frames: list[np.ndarray],
     fps: float,
@@ -704,8 +924,8 @@ def _save_practice(
     with landmarks_path.open("w", newline="") as file_handle:
         writer = csv.writer(file_handle)
         writer.writerow(RECORD_HEADER)
-        for t_ms, points, is_left in rows:
-            writer.writerow(_record_row(t_ms, points, is_left, bodies.get(t_ms)))
+        for t_ms, points, is_left, other in rows:
+            writer.writerow(_record_row(t_ms, points, is_left, bodies.get(t_ms), other))
 
     capture_dir = PRACTICE_DIR / "captures" / target
     capture_dir.mkdir(parents=True, exist_ok=True)
@@ -760,21 +980,13 @@ def practice(
     cara y hombros a la vista), y se guardan también los puntos del cuerpo."""
     recognizer = _load_recognizer()
     known = recognizer.signs
-    if signs:
-        requested = [unicodedata.normalize("NFC", sign.strip()).upper() for sign in signs]
-        unknown = [sign for sign in requested if sign not in known]
-        if unknown:
-            raise SystemExit(
-                f"El modelo no reconoce: {', '.join(unknown)}. Disponibles: {' '.join(known)}"
-            )
-    else:
-        requested = known
+    requested = _resolve_signs(signs, known) if signs else known
     queue = [sign for sign in requested for _ in range(reps)]
     print(f"Práctica de {participant}: {' '.join(queue)}")
 
     tracker, capture = HandTracker(), open_camera(camera)
     body_view = BodyView(body_enabled)
-    hand_frames: deque[tuple[int, np.ndarray, bool, str]] = deque(maxlen=120)
+    hand_frames: deque[tuple[int, np.ndarray, bool, Hand | None, str]] = deque(maxlen=120)
     body_frames: deque[tuple[int, np.ndarray]] = deque(maxlen=120)
     clip: deque[tuple[int, np.ndarray]] = deque()
     results: list[tuple[str, str]] = []
@@ -812,14 +1024,18 @@ def practice(
             body_view.update(frame, timestamp, detection[0] if detection else None)
             if body_view.body is not None:
                 body_frames.append((timestamp, body_view.body))
-            if detection:
-                draw_hand(frame, detection[0])
-            new_sign = recognizer.update(detection, tracker.handedness_score, timestamp)
+            _draw_hands(frame, detection, tracker.other)
+            new_sign = recognizer.update(
+                detection, tracker.handedness_score, timestamp, tracker.other, body_view.body
+            )
             if detection and recognizer.frame_label:
-                hand_frames.append((timestamp, *detection, recognizer.frame_label[0]))
+                label = recognizer.frame_label[0]
+                hand_frames.append((timestamp, *detection, tracker.other, label))
             _draw_recognizer(frame, recognizer, timestamp)
             body_view.draw(frame)
             _draw_prompt(frame, target, index + 1, len(queue))
+            if recognizer.rejected:
+                feedback = (_two_hands_message(recognizer.rejected), (0, 200, 255), now + 2.0)
             if new_sign is not None and new_sign != target:
                 message = f"Detecte {_ascii(new_sign)}, se pide {_ascii(target)}"
                 feedback = (message, (0, 200, 255), now + 1.5)
@@ -863,7 +1079,7 @@ def practice(
                     photo = clean.copy()
                     if body_view.body is not None:
                         draw_body(photo, body_view.body)
-                    draw_hand(photo, rows[-1][1])
+                    _draw_hands(photo, rows[-1][1:3], rows[-1][3])
                     size = (clean.shape[1], clean.shape[0])
                     title = f"{_ascii(target)} ({result}): revisala antes de guardar"
                     decision = _review(clip_frames or [photo], fps, title, size)
@@ -1021,11 +1237,31 @@ def main() -> None:
     videos_parser.add_argument("--stride", type=int, default=1, help="procesar 1 de cada N cuadros")
     videos_parser.add_argument("--overwrite", action="store_true")
 
+    glosses_parser = subparsers.add_parser(
+        "import-glosses",
+        help="importar palabras del dataset de glosas de Zenodo (mano y cuerpo)",
+    )
+    glosses_parser.add_argument("--source", type=Path, default=RAW_DIR / "MSL-glosses")
+    glosses_parser.add_argument("--overwrite", action="store_true")
+
+    frames_parser = subparsers.add_parser(
+        "import-frames", help="importar secuencias de fotos (una subcarpeta por persona)"
+    )
+    frames_parser.add_argument("--source", type=Path, required=True)
+    frames_parser.add_argument("--label", required=True, help="carpeta de la seña, ej. mama")
+    frames_parser.add_argument("--fps", type=float, default=8.0, help="ritmo supuesto de las fotos")
+    frames_parser.add_argument("--prefix", default="M", help="prefijo de persona del dataset")
+    frames_parser.add_argument("--overwrite", action="store_true")
+
     args = parser.parse_args()
     if args.command == "collect":
         collect(args.label, args.participant, args.camera, not args.no_body)
     elif args.command == "import-videos":
         import_videos(args.source, max(args.stride, 1), args.overwrite)
+    elif args.command == "import-glosses":
+        import_glosses(args.source, args.overwrite)
+    elif args.command == "import-frames":
+        import_frames(args.source, args.label, args.fps, args.prefix, args.overwrite)
     elif args.command == "train":
         try:
             train(args.model, args.only)

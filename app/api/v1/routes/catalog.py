@@ -29,6 +29,7 @@ class SignOut(BaseModel):
     hold_time_ms: int | None
     max_duration_ms: int | None
     reference_asset: str | None
+    hands: Literal[1, 2]
     components: dict[Component, str | None]
     validated: bool
 

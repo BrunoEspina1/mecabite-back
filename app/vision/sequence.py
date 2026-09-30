@@ -16,7 +16,15 @@ from pathlib import Path
 
 import numpy as np
 
-from app.vision.features import MIDDLE_MCP, NUM_FEATURES, NUM_LANDMARKS, WRIST, landmarks_to_vector
+from app.vision.body import other_hand_raised
+from app.vision.features import (
+    MIDDLE_MCP,
+    NUM_FEATURES,
+    NUM_LANDMARKS,
+    WRIST,
+    Hand,
+    landmarks_to_vector,
+)
 
 RATE_HZ = 15
 WINDOW_SECONDS = 2.0  # los videos del dataset duran 1.6-2.5 s
@@ -33,6 +41,9 @@ SPEED_LAG_MS = (
     150  # se mide contra el cuadro de hace 150 ms para no confundir temblor con movimiento
 )
 END_STILL_MS = 250  # la seña terminó cuando la mano lleva este tiempo quieta
+# Una seña de dos manos cuenta si la otra participa en al menos esta parte del movimiento.
+# En las glosas: gracias 85-100 %, por favor 78-100 %; en hola (una mano) 0-11 %.
+TWO_HANDS_SHARE = 0.5
 
 
 def load_sequence(path: Path) -> tuple[np.ndarray, np.ndarray, bool]:
@@ -172,28 +183,54 @@ class DynamicDetector:
     END_STILL_MS por debajo de STILL_SPEED (o al durar WINDOW_SECONDS). Entonces se compara la
     trayectoria completa: así no se confirma una X a media Q ni se cuenta dos veces la misma
     seña.
+
+    Las señas de `two_handed` (gracias, por favor) solo se aceptan si la otra mano participó
+    en el movimiento (`other_hand_raised`); si no, quedan en `rejected`. Con
+    `two_handed_only`, el detector solo acepta esas señas: así se sigue a la segunda mano sin
+    que cuente para las letras.
     """
 
-    def __init__(self, classifier, other_label: str):
+    def __init__(
+        self,
+        classifier,
+        other_label: str,
+        two_handed: frozenset[str] = frozenset(),
+        two_handed_only: bool = False,
+    ):
         self.classifier = classifier
         self.other_label = other_label
-        self._buffer: deque[tuple[float, np.ndarray, bool]] = deque()
+        self.two_handed = two_handed
+        self.two_handed_only = two_handed_only
+        # (t_ms, puntos, mano izquierda, la otra mano, ¿la otra mano participa?)
+        self._buffer: deque[tuple[float, np.ndarray, bool, Hand | None, bool]] = deque()
         self._moving_since: float | None = None
         self._still_since: float | None = None
         self.speed = 0.0
         self.last: tuple[str, float] | None = None
+        self.rejected: str | None = None  # seña de dos manos hecha con una, en este cuadro
 
     @property
     def moving(self) -> bool:
         return self._moving_since is not None
 
-    def push(self, t_ms: float, points: np.ndarray | None, is_left: bool = False) -> str | None:
-        """Agrega un cuadro (`points=None` si no hay mano). Devuelve la letra al confirmarse."""
+    def push(
+        self,
+        t_ms: float,
+        points: np.ndarray | None,
+        is_left: bool = False,
+        other: Hand | None = None,
+        body: np.ndarray | None = None,
+    ) -> str | None:
+        """Agrega un cuadro (`points=None` si no hay mano). Devuelve la letra al confirmarse.
+
+        `other`: la otra mano y `body`: el cuerpo, para las señas de dos manos."""
+        self.rejected = None
         if points is None:
             if self._buffer and t_ms - self._buffer[-1][0] > MAX_GAP_MS:
                 self.reset()
             return None
-        self._buffer.append((t_ms, points, is_left))
+        partner = other_hand_raised(points, other[0] if other else None, body)
+        self._buffer.append((t_ms, points, is_left, other, partner))
         while t_ms - self._buffer[0][0] > WINDOW_SECONDS * 1000 + 500:
             self._buffer.popleft()
 
@@ -211,28 +248,38 @@ class DynamicDetector:
         too_long = t_ms - self._moving_since >= WINDOW_SECONDS * 1000
         if not (ended or too_long):
             return None
-        self._moving_since = None
-        return self._classify()
+        started, self._moving_since = self._moving_since, None
+        return self._classify(started)
 
     def _current_speed(self, t_ms: float, points: np.ndarray) -> float:
-        for earlier_ms, earlier, _ in reversed(self._buffer):
+        for earlier_ms, earlier, *_ in reversed(self._buffer):
             if t_ms - earlier_ms >= SPEED_LAG_MS:
                 return hand_speed(earlier, points, t_ms - earlier_ms)
         return 0.0
 
-    def _classify(self) -> str | None:
+    def _classify(self, started: float) -> str | None:
         times = np.array([frame[0] for frame in self._buffer])
         sequence = np.array([frame[1] for frame in self._buffer])
         left = np.mean([frame[2] for frame in self._buffer]) > 0.5
         label, confidence = self.classifier.predict(sequence_features(times, sequence, left))
+        if self.two_handed_only and label not in self.two_handed:
+            return None
         self.last = (label, confidence)
         if label == self.other_label or confidence < CONFIDENCE_THRESHOLD:
             return None
+        if label not in self.two_handed:
+            return label
+        # Desde que la mano empezó a moverse (se mide contra el cuadro de hace SPEED_LAG_MS).
+        partners = [frame[4] for frame in self._buffer if frame[0] >= started - SPEED_LAG_MS]
+        if np.mean(partners) < TWO_HANDS_SHARE:
+            self.rejected = label
+            return None
         return label
 
-    def frames(self) -> list[tuple[float, np.ndarray, bool]]:
-        """Cuadros con mano acumulados (t_ms, puntos, mano izquierda): la última seña completa."""
-        return list(self._buffer)
+    def frames(self) -> list[tuple[float, np.ndarray, bool, Hand | None]]:
+        """Cuadros con mano acumulados (t_ms, puntos, mano izquierda, la otra mano): la última
+        seña completa."""
+        return [frame[:4] for frame in self._buffer]
 
     def reset(self) -> None:
         self._buffer.clear()

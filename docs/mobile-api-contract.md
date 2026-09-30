@@ -33,6 +33,8 @@ contrato con datos simulados mientras se implementa.
 - `GET /catalog/signs` agrega `levels`, `components` (descripción de cada componente) y
   `validated`.
 - `feedback` agrega `progress` y se define la lista de `feedback_code`.
+- Dos manos: `num_hands = 2`, `vision.hands` lleva hasta 2 manos y el catálogo agrega
+  `hands` (gracias y por favor se hacen con ambas). Nuevo `feedback_code`: `use_both_hands`.
 
 ## Arquitectura Del MVP
 
@@ -102,8 +104,10 @@ WebSocket: ws://<ip-de-la-laptop>:8000/api/v1/ws/sessions/{session_id}
 
 ### Mano (MediaPipe Hand Landmarker)
 
-- Configurar `num_hands = 1` en el MVP. `hands` es una lista para poder pasar a dos manos
-  sin romper el protocolo si alguna palabra del nivel 3 lo requiere.
+- Configurar `num_hands = 2` y enviar todas las manos detectadas, en el orden en que las
+  entrega MediaPipe. Gracias y por favor se hacen con las dos manos (`hands: 2` en el
+  catálogo) y solo cuentan si la otra mano también participa. El backend decide cuál es la
+  mano principal: las letras se reconocen con una sola.
 - `landmarks`: los 21 puntos **normalizados** (`x`, `y` de 0 a 1 respecto al ancho y alto
   de la imagen; `z` tal como lo entrega MediaPipe), en el orden oficial. No enviar los
   *world landmarks* ni escalar las coordenadas: el backend corrige la proporción de la
@@ -202,6 +206,7 @@ Respuesta `200` (recortada a dos señas):
       "hold_time_ms": 1000,
       "max_duration_ms": null,
       "reference_asset": "a.mp4",
+      "hands": 1,
       "components": {
         "configuration": "Puño cerrado con el pulgar extendido junto al índice.",
         "orientation": "Palma hacia el frente.",
@@ -219,6 +224,7 @@ Respuesta `200` (recortada a dos señas):
       "hold_time_ms": null,
       "max_duration_ms": 3000,
       "reference_asset": "j.mp4",
+      "hands": 1,
       "components": {
         "configuration": "Meñique extendido; demás dedos cerrados.",
         "orientation": null,
@@ -239,6 +245,7 @@ Respuesta `200` (recortada a dos señas):
 | `hold_time_ms` | Lo configura el servidor y puede cambiar: la app debe leerlo del catálogo (para la barra de `progress`), no asumir 1000 |
 | `required_components` | Componentes que se evalúan en ese nivel (RF-08) |
 | `reference_asset` | Nombre del video de referencia **empaquetado en la app**; no se descarga del backend |
+| `hands` | `2` si la seña se hace con las dos manos (hoy gracias y por favor); con una sola no se acepta. La app debe indicarlo en la lección |
 | `components` | Descripción de cada componente; `null` si no aplica o aún no está redactada |
 | `validated` | `false` mientras una persona intérprete de LSM no haya revisado la seña (RNF-05) |
 
@@ -383,7 +390,7 @@ exactamente 21 por mano.
 
 | Campo | Regla |
 | --- | --- |
-| `vision.hands` | `[]` si no se detecta mano; máximo 1 elemento en el MVP |
+| `vision.hands` | `[]` si no se detecta mano; máximo 2 elementos |
 | `vision.hands[].landmarks` | Exactamente 21 elementos `[x, y, z]` |
 | `vision.pose_landmarks` | `null` en niveles 1 y 2 |
 | `glove` | `null` en el MVP |
@@ -453,6 +460,7 @@ para el apoyo visual (ícono, animación, color; RNF-09). No debe interpretar el
 | `wrong_movement` | Falló el movimiento (niveles 2 y 3) | Revisa el movimiento |
 | `wrong_localization` | Falló la ubicación (nivel 3) | Revisa dónde colocas la mano |
 | `too_slow` | Seña dinámica de más de `max_duration_ms` | Hazla en menos de 3 segundos |
+| `use_both_hands` | Seña de dos manos hecha con una (`hands: 2`) | Esta seña se hace con las dos manos |
 
 ### `end_session` (app → backend)
 
@@ -514,7 +522,7 @@ irrecuperables:
 
 - [ ] URL base configurable; nada fijo en el código.
 - [ ] `NSLocalNetworkUsageDescription` en `Info.plist` y excepción de ATS para red local.
-- [ ] MediaPipe Hand Landmarker en modo video en vivo, `num_hands = 1`.
+- [ ] MediaPipe Hand Landmarker en modo video en vivo, `num_hands = 2`.
 - [ ] Enviar landmarks normalizados sin escalar, más `image_width`, `image_height`,
       `mirrored` y `handedness` crudo. Pasar las dos pruebas de orientación.
 - [ ] Enviar cada cuadro, incluidos los que no tienen mano (`hands: []`).
@@ -543,8 +551,9 @@ irrecuperables:
 
 - **Guante:** unidades, rangos, frecuencia y tipo de conexión; se integra cuando electrónica
   lo termine.
-- **Intérprete de LSM:** validar descripciones y patrones, y confirmar si alguna palabra
-  usa dos manos.
+- **Intérprete de LSM:** validar descripciones y patrones, y confirmar qué palabras usan
+  dos manos. En el dataset de glosas usan ambas gracias, por favor y ayuda; hoy el catálogo
+  marca gracias y por favor.
 - **Videos de referencia** de las 15 señas.
 - **Nivel 3:** confirmar Pose Landmarker (33 puntos) y definir las zonas de localización.
 - **Política para `record: true`:** consentimiento, dónde se guarda y cómo se borra.

@@ -15,6 +15,7 @@ import numpy as np
 
 NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR = 0, 2, 5, 7, 8
 MOUTH_LEFT, MOUTH_RIGHT, LEFT_SHOULDER, RIGHT_SHOULDER = 9, 10, 11, 12
+LEFT_WRIST, RIGHT_WRIST = 15, 16
 PALM = [0, 5, 9, 13, 17]  # muñeca y nudillos de la mano: centro de la palma
 
 MIN_VISIBILITY = 0.5
@@ -23,6 +24,10 @@ CHEST_ROOM = 0.5  # bajo los hombros debe caber medio ancho de hombros (ahí se 
 CENTER_MARGIN = 0.2  # el centro de los hombros debe quedar entre el 20 % y el 80 % del ancho
 MAX_NOSE_OFFSET = 0.3  # nariz respecto al centro de los hombros: más, está girada
 MAX_SHOULDER_DEPTH = 0.8  # diferencia de profundidad entre hombros: más, está de lado
+# La otra mano participa si su muñeca está a menos de esto (en anchos de hombro) bajo los
+# hombros. En las glosas de Zenodo, la mano de apoyo de gracias y por favor queda arriba de
+# esta línea y la mano que cuelga en hola, abajo (1.1 a 1.9).
+RAISED_HAND = 1.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,30 @@ def hand_location(hand: np.ndarray | None, body: np.ndarray | None) -> str | Non
     if abs(palm[0]) <= 0.8 and palm[1] <= 1.3:
         return "pecho"
     return "lejos del cuerpo"
+
+
+def other_hand_raised(
+    hand: np.ndarray | None, other: np.ndarray | None, body: np.ndarray | None
+) -> bool:
+    """¿La otra mano participa en la seña? Para las señas de dos manos (gracias, por favor).
+
+    `hand`: la mano que hace el movimiento; `other`: la segunda mano de HandTracker, si la vio.
+    Con el cuerpo a la vista cuenta si la otra muñeca está levantada: la de `other` o la del
+    pose más lejana a `hand`. El pose la ve aunque las manos estén juntas (por favor), donde
+    el detector de manos suele ver solo una. Sin cuerpo basta con que se detecte la otra mano.
+    """
+    if hand is None:
+        return False
+    if body is None or not _visible(body, LEFT_SHOULDER, RIGHT_SHOULDER):
+        return other is not None
+    center, width = _shoulders(body)
+    if width < MIN_SHOULDER_WIDTH:  # cuerpo muy lejos o inventado (video solo de la mano)
+        return other is not None
+    wrists = [other[0, :2]] if other is not None else []
+    far = max((LEFT_WRIST, RIGHT_WRIST), key=lambda i: np.linalg.norm(body[i, :2] - hand[0, :2]))
+    if body[far, 3] >= MIN_VISIBILITY:
+        wrists.append(body[far, :2])
+    return any((wrist[1] - center[1]) / width < RAISED_HAND for wrist in wrists)
 
 
 def body_status(hand: np.ndarray | None, body: np.ndarray | None, aspect: float) -> BodyStatus:

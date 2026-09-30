@@ -17,6 +17,8 @@ FINGER_CHAINS = [
     [0, 17, 18, 19, 20],
 ]
 NUM_FEATURES = NUM_LANDMARKS * 3 + 10 + len(THUMB_TARGETS) + 3 * len(FINGER_CHAINS) + 1
+# Una mano detectada: 21 puntos (x, y, z) y si es la izquierda.
+Hand = tuple[np.ndarray, bool]
 
 
 def _normalize(landmarks: np.ndarray, is_left: bool) -> np.ndarray:

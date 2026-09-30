@@ -27,6 +27,8 @@ class Catalog:
     dynamic: frozenset[str]
     # Señas con movimiento que no están en el catálogo (ej. K): negativos del detector dinámico.
     dynamic_negative: frozenset[str]
+    # Señas que solo cuentan si la otra mano también participa (gracias, por favor).
+    two_handed: frozenset[str] = frozenset()
 
     @property
     def dynamic_folders(self) -> frozenset[str]:
@@ -53,6 +55,7 @@ def load_catalog(path: Path = CATALOG_PATH, extras_path: Path | None = EXTRA_SIG
         | extra_dynamic,
         # Una seña extra deja de ser negativo: ahora es una clase (ej. K).
         dynamic_negative=signs.dynamic_negatives - extra_dynamic,
+        two_handed=frozenset(sign.data_label for sign in signs.signs if sign.hands == 2),
     )
 
 

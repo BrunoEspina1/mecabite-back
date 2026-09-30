@@ -42,6 +42,7 @@ class Sign:
     hold_time_ms: int | None
     max_duration_ms: int | None
     reference_asset: str | None
+    hands: int  # 2 si la seña usa las dos manos
     # Descripción de los cuatro componentes; None si no aplica o falta validarla.
     components: dict[str, str | None]
     validated: bool
@@ -87,6 +88,8 @@ def load_catalog(path: Path = CATALOG_PATH) -> Catalog:
             raise ValueError(f"La seña {sign_id!r} usa el nivel {item['level']}, que no existe")
         if item["type"] not in sign_types:
             raise ValueError(f"La seña {sign_id!r} tiene un tipo desconocido: {item['type']!r}")
+        if item.get("hands", 1) not in (1, 2):
+            raise ValueError(f"La seña {sign_id!r} debe usar 1 o 2 manos, no {item['hands']!r}")
         unknown = set(item.get("components", {})) - set(COMPONENTS)
         if unknown:
             raise ValueError(f"La seña {sign_id!r} tiene componentes desconocidos: {unknown}")
@@ -105,6 +108,7 @@ def load_catalog(path: Path = CATALOG_PATH) -> Catalog:
                 hold_time_ms=settings.vision_hold_ms if item["type"] == "static" else None,
                 max_duration_ms=timing["max_duration_ms"],
                 reference_asset=item.get("reference_asset"),
+                hands=item.get("hands", 1),
                 components={name: item.get("components", {}).get(name) for name in COMPONENTS},
                 validated=item.get("validated", False),
             )

@@ -80,3 +80,34 @@ def test_hand_location_needs_body() -> None:
     assert b.hand_location(hand_at(0.9, 0.5), None) is None
     status = b.body_status(None, None, ASPECT)
     assert not status.framed
+
+
+def with_wrists(body: np.ndarray, right_y: float, left_y: float) -> np.ndarray:
+    """Cada muñeca bajo su hombro, a la altura indicada."""
+    body = body.copy()
+    body[b.RIGHT_WRIST, :2] = (body[b.RIGHT_SHOULDER, 0], right_y)
+    body[b.LEFT_WRIST, :2] = (body[b.LEFT_SHOULDER, 0], left_y)
+    return body
+
+
+def test_other_hand_counts_only_when_raised() -> None:
+    body = frontal_body()  # hombros en y=0.6, 0.5 de ancho
+    hand = hand_at(ASPECT / 2 - 0.25, 0.7)  # la mano que se mueve, cerca de la muñeca derecha
+    raised, hanging = with_wrists(body, 0.7, left_y=0.9), with_wrists(body, 0.7, left_y=1.4)
+
+    # Aunque el detector de manos solo vea una (manos juntas), el pose ve la otra muñeca.
+    assert b.other_hand_raised(hand, None, raised)
+    assert not b.other_hand_raised(hand, None, hanging)
+    # La otra mano a la vista pero colgando no cuenta.
+    assert not b.other_hand_raised(hand, hand_at(ASPECT / 2 + 0.25, 1.4), hanging)
+    assert b.other_hand_raised(hand, hand_at(ASPECT / 2 + 0.25, 0.9), hanging)
+
+
+def test_other_hand_without_a_reliable_body_is_just_being_seen() -> None:
+    hand, other = hand_at(0.5, 0.5), hand_at(0.9, 0.5)
+    tiny = frontal_body(scale=0.2)  # video de solo la mano: hombros inventados y pequeños
+
+    assert b.other_hand_raised(hand, other, None)
+    assert not b.other_hand_raised(hand, None, None)
+    assert b.other_hand_raised(hand, other, tiny)
+    assert not b.other_hand_raised(None, other, None)
