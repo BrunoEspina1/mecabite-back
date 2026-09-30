@@ -2,7 +2,13 @@
 
 Las reglas son las de `vision live --target` (`app/vision/teacher.py`), ahora sin cámara:
 una ejecución de la seña objetivo cuenta solo si la persona está bien encuadrada (de frente,
-con cara y hombros a la vista) y 3 correctas seguidas aprueban la seña (RF-10).
+con cara y hombros a la vista) y 3 correctas aprueban la seña. A diferencia de `live` (y de
+RF-10, "consecutivas"), un intento fallido no reinicia la cuenta: se decidió así para no
+castigar un error después de dos aciertos.
+
+Solo se comparan señas del mismo tipo que la objetivo: al practicar una estática no se buscan
+movimientos (acomodar la mano no es una J) y al practicar una con movimiento no cuentan las
+formas quietas del camino (la I al inicio de la J).
 
 Los puntos llegan normalizados a la imagen vertical que vio MediaPipe en el iPhone. Se
 convierten a las unidades de `HandTracker`/`BodyTracker` (vista en espejo, x y z en alturas
@@ -17,13 +23,15 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.catalog import COMPONENTS, Catalog, Sign
+from app.core.config import settings
 from app.sessions.protocol import ObservationIn, VisionIn
 from app.vision.body import BodyStatus, body_status
 from app.vision.recognizer import Recognizer
 from app.vision.tracker import PRIMARY_LOST_MS, HandSlots
 
-APPROVE_AFTER = 3  # correctas seguidas (RF-10)
+APPROVE_AFTER = 3  # correctas para aprobar; las fallidas no reinician la cuenta
 RESULT_SHOW_MS = 1500  # tiempo que se sigue reportando un resultado para que la app lo muestre
+WRONG_SIGN_MS = settings.vision_wrong_sign_ms  # otra seña sostenida esto antes de avisar
 # body.py escribe sin acentos (las fuentes de OpenCV solo tienen ASCII); la app sí los tiene.
 ACCENTS = {"camara": "cámara", "Alejate": "Aléjate", "Acercate": "Acércate", "Muevete": "Muévete"}
 
@@ -122,7 +130,7 @@ class PracticeSession:
         status = body_status(detection[0] if detection else None, body, aspect)
 
         if new_sign is not None:
-            self.result = self._judge(new_sign, status, t_ms)
+            self.result = self._judge(new_sign, status, t_ms) or self.result
         elif self.recognizer.rejected:
             self.result = self._needs_both_hands(self.recognizer.rejected, t_ms)
         feedback = self._feedback(observation, detection is not None, status)
@@ -146,8 +154,10 @@ class PracticeSession:
 
     # --- Resultados de una ejecución --------------------------------------------------------
 
-    def _judge(self, label: str, status: BodyStatus, t_ms: float) -> Result:
-        """Se acaba de confirmar `label` (clase del modelo)."""
+    def _judge(self, label: str, status: BodyStatus, t_ms: float) -> Result | None:
+        """Se acaba de confirmar `label` (clase del modelo). None si no cuenta como intento."""
+        if self.practice and self.recognizer.is_dynamic(label) != (self.target.type == "dynamic"):
+            return None
         sign = self.catalog.find(label)
         predicted = sign.id if sign else None
         confidence = self._confidence(label)
@@ -182,7 +192,6 @@ class PracticeSession:
                 until,
             )
 
-        self.consecutive = 0
         if label == self.target.data_label:
             return Result(
                 "rejected",
@@ -304,8 +313,9 @@ class PracticeSession:
                     "message": "Siguiendo el movimiento…",
                 }
             )
-        if candidate is not None and candidate == stabilizer.confirmed:
-            # El estabilizador no vuelve a confirmar la misma seña mientras se sostenga.
+        # El estabilizador no vuelve a confirmar la misma seña mientras se sostenga.
+        held_again = candidate is not None and candidate == stabilizer.confirmed
+        if held_again and (static or not self.practice):
             return base | waiting | {"message": "Baja la mano y vuelve a hacer la seña"}
 
         if not self.practice:
@@ -345,7 +355,8 @@ class PracticeSession:
                     "message": "Mantén la posición",
                 }
             )
-        if candidate is not None:
+        # Acomodar la mano cambia la seña un instante: se avisa solo si la otra se sostiene.
+        if candidate is not None and (t_ms / 1000 - stabilizer.since) * 1000 >= WRONG_SIGN_MS:
             sign = self.catalog.find(candidate)
             return (
                 base

@@ -9,7 +9,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api.v1.routes.sessions import get_model_loader
 from app.main import app
-from app.sessions.practice import to_tracker_units
+from app.sessions.practice import WRONG_SIGN_MS, to_tracker_units
 from app.sessions.protocol import VisionIn
 from app.sessions.store import ModelNotAvailable, Models, SessionStore, get_store
 from app.vision.catalog import OTHER
@@ -170,6 +170,26 @@ def test_three_framed_executions_in_a_row_approve_the_sign(client: TestClient) -
     assert closed.value.code == 4404
 
 
+def test_a_failed_attempt_keeps_the_correct_count(client: TestClient, models: Models) -> None:
+    session = create(client)
+    attempt = VOTE_MS / 1000 + HOLD_SECONDS + 0.2
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        player.frames(attempt)
+        player.frames(HOLD_SECONDS + 0.3, hand=False)
+        models.static.prediction = ("B", 0.9)
+        failed = player.frames(attempt + 0.5)
+        player.frames(HOLD_SECONDS + 0.3, hand=False)
+        models.static.prediction = ("A", 0.9)
+        second = player.frames(attempt)
+
+    rejected = next(reply for reply in failed if reply["state"] == "rejected")
+    assert rejected["message"].startswith("Se reconoció B")
+    assert rejected["consecutive_correct"] == 1
+    assert any(reply["message"] == "¡Bien! 2 de 3" for reply in second)
+
+
 def test_holding_after_a_confirmation_asks_to_repeat(client: TestClient) -> None:
     session = create(client)
     with client.websocket_connect(session["websocket_path"]) as websocket:
@@ -193,6 +213,53 @@ def test_a_correct_sign_without_the_body_in_frame_does_not_count(client: TestCli
     assert rejected["feedback_code"] == "adjust_framing"
     assert rejected["message"].startswith("Seña correcta, pero no se ve tu cuerpo")
     assert rejected["consecutive_correct"] == 0
+
+
+def test_moving_the_hand_a_little_does_not_fail_the_attempt(
+    client: TestClient, models: Models
+) -> None:
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        player.frames(0.6)
+        switched_at = player.t_ms
+        models.static.prediction = ("B", 0.9)  # otra forma de mano
+        replies = player.frames(1.2)
+
+    wrong = [reply for reply in replies if reply["feedback_code"] == "wrong_configuration"]
+    assert wrong, "si la otra forma se sostiene, sí se avisa"
+    assert wrong[0]["timestamp_ms"] - switched_at >= WRONG_SIGN_MS
+    assert all(reply["state"] != "rejected" for reply in replies)
+    assert replies[-1]["consecutive_correct"] == 0
+
+
+WITH_MOVEMENT = Models(FakeClassifier("A"), FakeClassifier("J"), "vision-test")
+
+
+@pytest.mark.parametrize("models", [WITH_MOVEMENT])
+def test_static_targets_do_not_look_for_movement(client: TestClient) -> None:
+    store = app.dependency_overrides[get_store]()
+
+    static = store.get(create(client, target="a")["session_id"])
+    dynamic = store.get(create(client, target="j")["session_id"])
+
+    assert static.practice.recognizer.detector is None
+    assert dynamic.practice.recognizer.detector is not None
+
+
+@pytest.mark.parametrize("models", [WITH_MOVEMENT])
+def test_held_shapes_do_not_count_against_a_moving_sign(client: TestClient) -> None:
+    session = create(client, target="j")
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        replies = Player(websocket).frames(VOTE_MS / 1000 + HOLD_SECONDS + 1.0)
+        websocket.send_json({"type": "end_session", "reason": "user_finished"})
+        summary = websocket.receive_json()
+
+    assert all(reply["state"] != "rejected" for reply in replies)
+    assert replies[-1]["message"] == "Haz la seña J con su movimiento"
+    assert summary["attempts"] == 0
 
 
 def test_no_hand_asks_to_show_it(client: TestClient) -> None:

@@ -34,6 +34,7 @@ CONFIDENCE_THRESHOLD = settings.vision_confidence_threshold
 VOTE_MS = settings.vision_vote_ms  # ventana de votos del modelo estático
 VOTE_SHARE = 0.75  # la seña debe ganar este porcentaje de la ventana
 HOLD_SECONDS = settings.vision_hold_ms / 1000
+GRACE_SECONDS = settings.vision_grace_ms / 1000
 HANDEDNESS_MIN_SCORE = 0.8
 HAND_VOTES = 12  # cuadros para decidir si es mano izquierda o derecha (solo informativo)
 ALPHABET = "ABCDEFGHIJKLMNÑOPQRSTUVWXYZ"
@@ -50,19 +51,30 @@ class SignStabilizer:
 
     Evita que las formas intermedias de un movimiento (por ejemplo, la I al inicio de la J)
     aparezcan como seña reconocida.
+
+    Un cambio que dura menos de `grace_seconds` (la mano se movió un poco) no reinicia el
+    tiempo sostenido. Si el cambio sigue, la seña nueva cuenta desde que apareció.
     """
 
-    def __init__(self, hold_seconds: float = HOLD_SECONDS):
+    def __init__(self, hold_seconds: float = HOLD_SECONDS, grace_seconds: float = GRACE_SECONDS):
         self.hold_seconds = hold_seconds
+        self.grace_seconds = grace_seconds
         self.candidate: str | None = None
         self.since = 0.0
         self.confirmed: str | None = None
+        self._change: tuple[str | None, float] | None = None  # (seña distinta, desde)
 
     def update(self, label: str | None, now: float) -> str | None:
         """Devuelve la seña en el instante en que se confirma; si no, None."""
-        if label != self.candidate:
-            self.candidate, self.since = label, now
-            return None
+        if label == self.candidate:
+            self._change = None
+        else:
+            if self._change is None or self._change[0] != label:
+                self._change = (label, now)
+            if now - self._change[1] < self.grace_seconds:
+                return None
+            self.candidate, self.since = self._change
+            self._change = None
         if now - self.since < self.hold_seconds or label == self.confirmed:
             return None
         self.confirmed = label
@@ -70,7 +82,7 @@ class SignStabilizer:
 
     def force(self, label: str, now: float, show_seconds: float = 2.0) -> None:
         """Muestra una seña confirmada por otro camino (con movimiento) al menos `show_seconds`."""
-        self.confirmed, self.candidate = label, None
+        self.confirmed, self.candidate, self._change = label, None, None
         self.since = now + show_seconds - self.hold_seconds
 
     def progress(self, now: float) -> float:
