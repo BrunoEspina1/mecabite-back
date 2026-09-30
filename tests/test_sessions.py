@@ -8,11 +8,14 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.v1.routes.sessions import get_model_loader
+from app.core.config import settings
 from app.main import app
+from app.sessions.glove import get_glove_feed
 from app.sessions.practice import WRONG_SIGN_MS, to_tracker_units
 from app.sessions.protocol import VisionIn
 from app.sessions.store import ModelNotAvailable, Models, SessionStore, get_store
 from app.vision.catalog import OTHER
+from app.vision.glove import GloveReading
 from app.vision.recognizer import HOLD_SECONDS, VOTE_MS
 
 WIDTH, HEIGHT = 720, 1280
@@ -45,7 +48,9 @@ HAND = {
 }
 
 
-def observation(sequence: int, t_ms: float, hand: bool = True, body: bool = True) -> dict:
+def observation(
+    sequence: int, t_ms: float, hand: bool = True, body: bool = True, glove: dict | None = None
+) -> dict:
     return {
         "type": "observation",
         "sequence": sequence,
@@ -57,7 +62,7 @@ def observation(sequence: int, t_ms: float, hand: bool = True, body: bool = True
             "hands": [HAND] if hand else [],
             "pose_landmarks": framed_body() if body else None,
         },
-        "glove": None,
+        "glove": glove,
     }
 
 
@@ -375,3 +380,143 @@ def test_unmirrored_frames_are_flipped_like_the_webcam() -> None:
     assert points[0, 1] == pytest.approx(0.6)
     assert is_left is False
     assert body is not None and body.shape == (33, 4)
+
+
+# --- Guante y correcciones ------------------------------------------------------------------
+
+A_GLOVE = {"pulgar": 3, "indice": 1, "medio": 2, "anular": 1, "menique": 1}
+
+
+def glove(**fingers: float) -> dict:
+    return {"values": A_GLOVE | fingers}
+
+
+def test_the_glove_rejects_a_sign_the_camera_accepted_and_says_what_to_fix(
+    client: TestClient,
+) -> None:
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        wrong = player.frames(VOTE_MS / 1000 + HOLD_SECONDS + 0.3, glove=glove(menique=3))
+        # Corrige el meñique sin bajar la mano: se vuelve a evaluar al sostenerla otra vez.
+        fixed = player.frames(3.0, glove=glove())
+
+    live = next(reply for reply in wrong if reply["corrections"])
+    assert (live["feedback_code"], live["message"]) == (
+        "wrong_configuration",
+        "Encoge más el meñique",
+    )
+    assert live["corrections"] == [
+        {
+            "component": "configuration",
+            "part": "menique",
+            "action": "flex",
+            "message": "Encoge más el meñique",
+            "source": "glove",
+        }
+    ]
+    assert live["glove"]["connected"] is True
+    assert live["glove"]["fingers"]["menique"] == 3
+    rejected = next(reply for reply in wrong if reply["state"] == "rejected")
+    assert rejected["components"]["configuration"] == "incorrect"
+    assert rejected["corrections"][0]["part"] == "menique"
+    assert all(reply["state"] != "confirmed" for reply in wrong)
+
+    confirmed = next(reply for reply in fixed if reply["state"] == "confirmed")
+    assert (confirmed["message"], confirmed["corrections"]) == ("¡Bien! 1 de 3", [])
+
+
+def test_a_short_glove_blip_is_not_reported(client: TestClient) -> None:
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        player.frames(0.3, glove=glove())
+        blip = player.frames(0.2, glove=glove(anular=3))
+        after = player.frames(1.2, glove=glove())
+
+    assert all(reply["corrections"] == [] for reply in blip + after)
+    assert any(reply["state"] == "confirmed" for reply in after)
+
+
+def test_without_a_glove_the_camera_still_evaluates(client: TestClient) -> None:
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        ready = websocket.receive_json()
+        replies = Player(websocket).frames(VOTE_MS / 1000 + HOLD_SECONDS + 0.2)
+
+    assert ready["required_inputs"] == ["hand", "pose"]
+    assert replies[-1]["glove"] == {"connected": False}
+    assert any(reply["state"] == "confirmed" for reply in replies)
+
+
+def test_a_required_glove_that_sends_nothing_pauses_the_practice(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "glove_required", True)
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        ready = websocket.receive_json()
+        player = Player(websocket)
+        replies = player.frames(VOTE_MS / 1000 + HOLD_SECONDS + 0.2)
+        connected = player.frames(VOTE_MS / 1000 + HOLD_SECONDS + 0.2, glove=glove())
+
+    assert ready["required_inputs"] == ["hand", "pose", "glove"]
+    assert {reply["state"] for reply in replies} == {"disconnected"}
+    assert any(reply["state"] == "confirmed" for reply in connected)
+
+
+def test_sessions_read_the_ble_glove_feed(client: TestClient) -> None:
+    class FakeFeed:
+        def recent(self, _window_ms: float) -> list[GloveReading]:
+            values = [0, 0, 0, 40, 0, 0, 3, 1, 2, 1, 3]  # mismo orden que el ESP32
+            return [GloveReading.from_values(0, values)]
+
+    app.dependency_overrides[get_glove_feed] = FakeFeed
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        replies = Player(websocket).frames(0.6)
+
+    assert replies[-1]["glove"]["pitch"] == -40
+    assert replies[-1]["message"] == "Encoge más el meñique"
+
+
+def test_a_finger_that_goes_wrong_at_the_end_of_the_hold_is_still_caught(
+    client: TestClient,
+) -> None:
+    session = create(client)
+    hold = VOTE_MS / 1000 + HOLD_SECONDS
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        player.frames(hold - 0.4, glove=glove())
+        late = player.frames(0.6, glove=glove(menique=3))
+
+    assert all(reply["state"] != "confirmed" for reply in late)
+    rejected = next(reply for reply in late if reply["state"] == "rejected")
+    assert rejected["message"] == "Encoge más el meñique"
+
+
+def test_camera_corrections_can_be_hints_only(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "feedback_camera_blocks", False)
+    # De lado: los nudillos del índice y del meñique se ven encimados.
+    sideways = HAND | {"landmarks": [[0.5, 0.7, 0.0]] + [[0.5, 0.6, 0.0]] * 20}
+    session = create(client)
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        replies = []
+        for _ in range(int((VOTE_MS / 1000 + HOLD_SECONDS + 0.3) * 1000 / FRAME_MS)):
+            message = observation(player.sequence, player.t_ms, glove=glove())
+            message["vision"]["hands"] = [sideways]
+            websocket.send_json(message)
+            replies.append(websocket.receive_json())
+            player.sequence += 1
+            player.t_ms += FRAME_MS
+
+    assert any(r["corrections"] and r["corrections"][0]["part"] == "palm" for r in replies)
+    assert any(reply["state"] == "confirmed" for reply in replies)

@@ -3,7 +3,7 @@
 Control global de [`Requirements.md`](../Requirements.md): qué está hecho, qué falta y qué
 sigue. Es la referencia común para todas las personas y sesiones que trabajan en el repo.
 
-**Última actualización:** 2026-09-30
+**Última actualización:** 2026-09-30 (correcciones con guante)
 
 ## Cómo Mantenerlo
 
@@ -42,10 +42,10 @@ que funciona con datos del iPhone vía REST o WebSocket, que es lo que pide el M
 
 | ID | Requerimiento | Estado | Hecho | Falta |
 | --- | --- | --- | --- | --- |
-| RF-01 | Recibir datos del guante en tiempo real | ⛔ Bloqueado | Formato preliminar de 11 valores en el contrato | Specs reales del guante (electrónica); lectura y validación en el backend |
+| RF-01 | Recibir datos del guante en tiempo real | 🟡 Parcial | La API lee el guante por BLE (`GLOVE_LIVE=true`, `GloveFeed` en `app/vision/glove.py`) y lo junta con cada observación; también acepta la lectura en la observación (`tests/test_sessions.py`) | Probar en la laptop de la demo con el guante real |
 | RF-02 | Calibración guiada y recalibrar | 🟡 Parcial | Encuadre de cámara: dice qué corregir (`body.framing_issue`, `tests/test_body.py`). API: con los `pose_landmarks` del iPhone responde `adjust_framing` (`tests/test_sessions.py`) | Calibración del guante (bloqueada); flujo "antes de la primera lección" |
 | RF-03 | MediaPipe de mano y cuerpo para localizar la seña | 🟡 Parcial | Webcam: Hand + Pose Landmarker lite (33 puntos) y zona de la palma (frente, cara, boca/barbilla, lado de la cara, hombro, pecho) en `app/vision/body.py`, `tracker.py`; tests en `tests/test_body.py`. API: recibe `pose_landmarks` en todos los niveles y los convierte a las unidades de la webcam (`app/sessions/practice.py`) | Usar la zona para el componente `localization` (hoy `not_available`); validar zonas con intérprete |
-| RF-04 | Combinar guante y cámara | ⛔ Bloqueado | — | Guante; definir fusión por componente |
+| RF-04 | Combinar guante y cámara | 🟡 Parcial | Configuración con el guante (`expected.glove_fingers`) y la cámara donde el guante falla (C, pulgar); orientación con la cámara y la inclinación del guante contra `glove_reference.json`. Una seña que la cámara reconoce y el guante contradice se rechaza (`app/sessions/feedback.py`, `tests/test_feedback.py`) | Generar `glove_reference.json` con las grabaciones; ajustar umbrales de cámara con personas reales |
 | RF-05 | Detectar y evaluar movimiento | 🟡 Parcial | Webcam: `DynamicDetector` detecta inicio y fin por velocidad y clasifica la trayectoria (`app/vision/sequence.py`) | Por API; reportar el componente `movement` |
 | RF-06 | Estática válida al sostenerla ≥ 1 s | 🟡 Parcial | `SignStabilizer` en `app/vision/recognizer.py`, sin cámara y con el tiempo de cada cuadro (`tests/test_recognizer.py`). `VISION_HOLD_MS=1000` en el `.env` local y como valor por defecto; la API lo reporta como `hold_time_ms` | Validar con personas y modelos reales por API |
 | RF-07 | Dinámica: trayectoria completa en ≤ 3 s | 🟡 Parcial | Modelo dinámico sobre ventana de 2 s; `Recognizer` lo combina con el estático sin cámara. Con videos grabados reconoce J, Z, Q, X y Ñ | Por API; decidir si un clasificador cuenta como "patrón de referencia" o se agregan plantillas al catálogo |
@@ -54,7 +54,7 @@ que funciona con datos del iPhone vía REST o WebSocket, que es lo que pide el M
 | RF-10 | Aprobada con 3 correctas consecutivas | 🟡 Parcial | Webcam: `live --target` (3 seguidas). API: `PracticeSession` cuenta 3 correctas con buen encuadre y responde `approved`; un fallo no reinicia la cuenta (`tests/test_sessions.py`) | Probar con el iPhone. Confirmar con el equipo el cambio a "3 correctas" (RF-10 dice consecutivas) |
 | RF-11 | Video de referencia y descripción de componentes | 🟡 Parcial | Campos en el catálogo; borradores de 7 señas (`validated: false`) | Descripciones de Ñ, Q, X y palabras; grabar los 15 videos; validación del intérprete |
 | RF-12 | Modo práctica en tiempo real | 🟡 Parcial | Webcam: `vision live --target`, `vision practice`. API: `POST /sessions` + WebSocket en modo `practice` (`app/api/v1/routes/sessions.py`, `tests/test_sessions.py`) | Probar con el iPhone y los modelos reales |
-| RF-13 | Indicar qué componente falló | 🟡 Parcial | Webcam y API: rechazan una seña correcta sin buen encuadre y dicen qué corregir (`adjust_framing`). API: una seña distinta responde `wrong_configuration` o `wrong_movement` y dos manos `use_both_hands` | Evaluar por separado configuración y orientación (normal de la palma) y localización: hoy todos los componentes requeridos comparten el resultado del modelo |
+| RF-13 | Indicar qué componente falló | 🟡 Parcial | API: `corrections` dice qué dedo estirar o encoger, hacia dónde girar la palma o la muñeca y si subir el brazo, con el componente que falla (`app/sessions/feedback.py`); la app las muestra. Encuadre (`adjust_framing`), dos manos (`use_both_hands`) | Localización de las palabras (nivel 3); correcciones de movimiento |
 | RF-14 | Modo demostración | 🟡 Parcial | Webcam: `vision demo`. API: modo `demo` reporta `predicted_sign` (`tests/test_sessions.py`) | Probar con el iPhone |
 | RF-15 | Entrada de datos simulados por consola (array) | ⬜ Pendiente | Formato en el contrato (`POST /simulations/predict`) | `vision simulate` + endpoint + evaluador por reglas del catálogo |
 
@@ -82,7 +82,6 @@ En orden de prioridad para el MVP.
 | --- | --- | --- | --- | --- |
 | 7 | Script que simula al iPhone reproduciendo grabaciones por WebSocket | Backend | RNF-01 | 6 |
 | 8 | `vision simulate` + `POST /simulations/predict` con evaluador por reglas | Backend | RF-15, RF-01 | 5 |
-| 9 | Orientación explícita (normal de la palma) para reportar el componente | Visión | RF-13 | — |
 | 10 | Evaluación por intento y por nivel | Visión | RNF-03, RNF-04 | — |
 | 11 | Palabras: 4 de 5 importadas; falta mamá (grabar o validar Mendeley/MSL-150) y agregar localización (cuerpo) y ventana de 3 s al modelo | Visión | RF-09, RF-03 | Intérprete |
 
@@ -105,12 +104,14 @@ En orden de prioridad para el MVP.
 | 2026-09-29 | Contrato móvil v0.2.0: `hands` como lista, `image_width`/`image_height`/`mirrored`, `glove: null` en el MVP |
 | 2026-09-29 | El iPhone enviará `pose_landmarks` en todos los niveles: el backend lo usa para validar el encuadre (de frente, cara y hombros visibles) |
 | 2026-09-29 | Una ejecución correcta solo cuenta con buen encuadre en todos los niveles (como `live --target`). La app usa `num_hands = 1`: la otra mano de gracias y por favor se detecta con las muñecas del cuerpo |
+| 2026-09-30 | El guante se conecta por BLE a la laptop del backend (no al iPhone). Una seña que la cámara reconoce pero el guante contradice se rechaza con sus correcciones (principio Indivisa: ninguna parte decide sola) |
 | 2026-09-30 | En la práctica por API un intento fallido ya no reinicia la cuenta: se aprueba con 3 correctas en la sesión (RF-10 dice "consecutivas"; pedido del equipo para no castigar un error tras dos aciertos). `vision live` sigue pidiendo 3 seguidas |
 
 ## Bitácora
 
 | Fecha | Qué se hizo | Requerimientos |
 | --- | --- | --- |
+| 2026-09-30 | Correcciones concretas con guante + cámara: `corrections` y `glove` en `feedback`, `expected` por seña en `signs.json` (con las fallas del guante), guante por BLE en la API (`GLOVE_LIVE`, `GLOVE_REQUIRED`), `vision glove-reference` y la app las muestra. 107 tests pasan | RF-01, RF-04, RF-13 |
 | 2026-09-30 | Práctica por API: un fallo ya no reinicia la cuenta de correctas (ver Decisiones) | RF-10 |
 | 2026-09-30 | Tolerancia al acomodar la mano (práctica por API): con una estática objetivo no se buscan movimientos (se leían como J o Z y reiniciaban las 3 seguidas), con una dinámica no cuentan las formas quietas, una pérdida menor a `VISION_GRACE_MS` (300 ms) no reinicia el sostener y "Revisa la forma de tu mano" espera `VISION_WRONG_SIGN_MS` (500 ms). 79 tests pasan | RF-06, RF-10, RF-13 |
 | 2026-09-29 | `POST /sessions` + WebSocket (`app/api/v1/routes/sessions.py`, `app/sessions/`): convierte las observaciones del iPhone a las unidades de la webcam (proporción, espejo, etiqueta de mano), sesiones de práctica y demo con las reglas de `live --target`, encuadre con `pose_landmarks`, `feedback_code` e ids del catálogo, errores del contrato (`4404`, `INVALID_OBSERVATION` sin cerrar la conexión). Contrato actualizado: `pose_landmarks` en todos los niveles, `adjust_framing`, `503 MODEL_NOT_AVAILABLE`/`SIGN_NOT_TRAINED`. 73 tests pasan. `record: true` aún no guarda nada | RF-02, RF-03, RF-10, RF-12, RF-13, RF-14 |

@@ -20,6 +20,7 @@
   ],
   "_nota_sign_types": "El tiempo que hay que sostener una estática (RF-06) no va aquí: se configura con VISION_HOLD_MS en .env y la API lo reporta como hold_time_ms.",
   "_nota_hands": "`hands`: 2 si la seña usa las dos manos (si falta, 1). Con una sola mano no se acepta aunque el movimiento sea correcto.",
+  "_nota_expected": "`expected`: cómo debe verse la seña para corregir (RF-13). `glove_fingers`: valores del guante aceptados por dedo (1 encogido, 2 a medias, 3 estirado); un dedo que no aparece no se revisa con el guante. Por fallas del guante: el medio no llega a 1 (encogido = [1, 2]), el pulgar marca 2 muy seguido, en la C todos marcan 3 (se revisa con la cámara) y en la Q pulgar e índice quedan en 3. `camera_fingers`: extended | half | flexed, revisados con la cámara. `palm`: facing (palma o dorso hacia la cámara) | side. `pointing`: up | down. La inclinación esperada del guante está en glove_reference.json (`vision glove-reference`).",
   "sign_types": {
     "static": { "max_duration_ms": null },
     "dynamic": { "max_duration_ms": 3000 }
@@ -36,6 +37,11 @@
       "components": {
         "configuration": "Puño cerrado con el pulgar extendido junto al índice.",
         "orientation": "Palma hacia el frente."
+      },
+      "expected": {
+        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [2, 3]},
+        "palm": "facing",
+        "pointing": "up"
       }
     },
     {
@@ -49,6 +55,12 @@
       "components": {
         "configuration": "Cuatro dedos extendidos y juntos, pulgar doblado sobre la palma.",
         "orientation": "Palma hacia el frente, dedos hacia arriba."
+      },
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [1, 2]},
+        "camera_fingers": {"pulgar": "flexed"},
+        "palm": "facing",
+        "pointing": "up"
       }
     },
     {
@@ -62,6 +74,10 @@
       "components": {
         "configuration": "Dedos juntos y curvos con el pulgar enfrente, formando una C.",
         "orientation": "Palma hacia un lado."
+      },
+      "expected": {
+        "camera_fingers": {"indice": "half", "medio": "half", "anular": "half", "menique": "half"},
+        "palm": "side"
       }
     },
     {
@@ -75,6 +91,12 @@
       "components": {
         "configuration": "Índice hacia arriba y pulgar hacia el lado formando una L; demás dedos cerrados.",
         "orientation": "Palma hacia el frente."
+      },
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [2, 3]},
+        "camera_fingers": {"pulgar": "extended"},
+        "palm": "facing",
+        "pointing": "up"
       }
     },
     {
@@ -88,6 +110,11 @@
       "components": {
         "configuration": "Pulgar y meñique extendidos; demás dedos cerrados.",
         "orientation": "Palma hacia el frente."
+      },
+      "expected": {
+        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [3], "pulgar": [2, 3]},
+        "camera_fingers": {"pulgar": "extended"},
+        "palm": "facing"
       }
     },
     {
@@ -101,6 +128,9 @@
       "components": {
         "configuration": "Meñique extendido; demás dedos cerrados.",
         "movement": "Trazar una J con la punta del meñique."
+      },
+      "expected": {
+        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [3], "pulgar": [1, 2]}
       }
     },
     {
@@ -111,7 +141,10 @@
       "data_label": "Ñ",
       "reference_asset": "enie.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [1], "menique": [1], "pulgar": [1, 2]}
+      }
     },
     {
       "id": "q",
@@ -121,7 +154,10 @@
       "data_label": "Q",
       "reference_asset": "q.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"pulgar": [3], "indice": [3], "medio": [1, 2], "anular": [1], "menique": [1]}
+      }
     },
     {
       "id": "x",
@@ -131,7 +167,11 @@
       "data_label": "X",
       "reference_asset": "x.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"indice": [1, 2], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [1, 2]},
+        "camera_fingers": {"indice": "half"}
+      }
     },
     {
       "id": "z",
@@ -144,6 +184,9 @@
       "components": {
         "configuration": "Índice extendido; demás dedos cerrados.",
         "movement": "Trazar una Z con la punta del índice."
+      },
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [1, 2]}
       }
     },
     {
@@ -154,7 +197,10 @@
       "data_label": "hola",
       "reference_asset": "hola.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]}
+      }
     },
     {
       "id": "gracias",
@@ -165,7 +211,10 @@
       "hands": 2,
       "reference_asset": "gracias.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]}
+      }
     },
     {
       "id": "por_favor",
@@ -176,7 +225,10 @@
       "hands": 2,
       "reference_asset": "por_favor.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"indice": [3], "medio": [3], "anular": [3], "menique": [3], "pulgar": [2, 3]}
+      }
     },
     {
       "id": "ayuda",
@@ -186,7 +238,10 @@
       "data_label": "ayuda",
       "reference_asset": "ayuda.mp4",
       "validated": false,
-      "components": {}
+      "components": {},
+      "expected": {
+        "glove_fingers": {"indice": [1], "medio": [1, 2], "anular": [1], "menique": [1], "pulgar": [2, 3]}
+      }
     },
     {
       "id": "mama",

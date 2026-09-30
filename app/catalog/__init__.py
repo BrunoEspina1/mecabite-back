@@ -18,6 +18,10 @@ from app.core.config import settings
 CATALOG_PATH = Path(__file__).with_name("signs.json")
 COMPONENTS = ("configuration", "orientation", "localization", "movement")
 SIGN_ID = re.compile(r"^[a-z0-9_]+$")
+FINGERS = ("pulgar", "indice", "medio", "anular", "menique")
+FINGER_STATES = ("extended", "half", "flexed")
+PALMS = ("facing", "side")
+POINTING = ("up", "down")
 
 
 def _key(text: str) -> str:
@@ -29,6 +33,21 @@ class Level:
     level: int
     name: str
     required_components: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Expected:
+    """Cómo debe verse la seña para dar correcciones concretas (`expected` en signs.json)."""
+
+    # Valores del guante aceptados por dedo (1 encogido, 2 a medias, 3 estirado).
+    glove_fingers: dict[str, tuple[int, ...]]
+    # Estado de cada dedo revisado con la cámara: extended | half | flexed.
+    camera_fingers: dict[str, str]
+    palm: str | None  # facing | side
+    pointing: str | None  # up | down
+
+
+NO_EXPECTATION = Expected({}, {}, None, None)
 
 
 @dataclass(frozen=True)
@@ -46,6 +65,7 @@ class Sign:
     # Descripción de los cuatro componentes; None si no aplica o falta validarla.
     components: dict[str, str | None]
     validated: bool
+    expected: Expected = NO_EXPECTATION
 
 
 @dataclass(frozen=True)
@@ -69,6 +89,36 @@ class Catalog:
             if key in {_key(sign.id), _key(sign.display_name), _key(sign.data_label)}:
                 return sign
         return None
+
+
+def _expected(sign_id: str, item: dict) -> Expected:
+    def fail(message: str) -> ValueError:
+        return ValueError(f"`expected` de {sign_id!r}: {message}")
+
+    unknown = set(item) - {"glove_fingers", "camera_fingers", "palm", "pointing"}
+    if unknown:
+        raise fail(f"campos desconocidos {unknown}")
+    glove = item.get("glove_fingers", {})
+    camera = item.get("camera_fingers", {})
+    for finger in set(glove) | set(camera):
+        if finger not in FINGERS:
+            raise fail(f"dedo desconocido {finger!r}")
+    for finger, values in glove.items():
+        if not values or not set(values) <= {1, 2, 3}:
+            raise fail(f"{finger} debe aceptar valores entre 1 y 3, no {values!r}")
+    for finger, state in camera.items():
+        if state not in FINGER_STATES:
+            raise fail(f"{finger} debe ser {' | '.join(FINGER_STATES)}, no {state!r}")
+    if item.get("palm") not in (None, *PALMS):
+        raise fail(f"palm debe ser {' | '.join(PALMS)}")
+    if item.get("pointing") not in (None, *POINTING):
+        raise fail(f"pointing debe ser {' | '.join(POINTING)}")
+    return Expected(
+        glove_fingers={finger: tuple(sorted(values)) for finger, values in glove.items()},
+        camera_fingers=dict(camera),
+        palm=item.get("palm"),
+        pointing=item.get("pointing"),
+    )
 
 
 def load_catalog(path: Path = CATALOG_PATH) -> Catalog:
@@ -111,6 +161,7 @@ def load_catalog(path: Path = CATALOG_PATH) -> Catalog:
                 hands=item.get("hands", 1),
                 components={name: item.get("components", {}).get(name) for name in COMPONENTS},
                 validated=item.get("validated", False),
+                expected=_expected(sign_id, item.get("expected", {})),
             )
         )
 

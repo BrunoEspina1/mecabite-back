@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from app.api.errors import ApiError
 from app.catalog import get_catalog
 from app.core.config import settings
+from app.sessions.glove import get_glove_feed
 from app.sessions.practice import ObservationError, PracticeSession
 from app.sessions.protocol import (
     PROTOCOL_VERSION,
@@ -31,6 +32,7 @@ from app.sessions.store import (
     get_store,
     load_models,
 )
+from app.vision.glove import GloveFeed
 
 router = APIRouter(tags=["sessions"])
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ def get_model_loader() -> ModelLoader:
 
 Store = Annotated[SessionStore, Depends(get_store)]
 Loader = Annotated[ModelLoader, Depends(get_model_loader)]
+Glove = Annotated[GloveFeed | None, Depends(get_glove_feed)]
 
 
 def websocket_path(session_id: str) -> str:
@@ -58,7 +61,9 @@ def websocket_path(session_id: str) -> str:
 
 
 @router.post("/sessions", status_code=201)
-async def create_session(request: CreateSessionIn, store: Store, load: Loader) -> CreateSessionOut:
+async def create_session(
+    request: CreateSessionIn, store: Store, load: Loader, glove: Glove
+) -> CreateSessionOut:
     if not supported_version(request.client_version):
         raise ApiError(
             426,
@@ -96,7 +101,7 @@ async def create_session(request: CreateSessionIn, store: Store, load: Loader) -
         request.mode,
         target.level if target else None,
         models.version,
-        PracticeSession(recognizer, catalog, target),
+        PracticeSession(recognizer, catalog, target, glove.recent if glove else None),
     )
     return CreateSessionOut(
         session_id=session.id,
@@ -137,7 +142,8 @@ async def session_socket(websocket: WebSocket, session_id: str, store: Store) ->
             "model_version": session.model_version,
             "min_sample_rate_hz": MIN_SAMPLE_RATE_HZ,
             # El cuerpo se usa en todos los niveles para validar el encuadre.
-            "required_inputs": ["hand", "pose"],
+            "required_inputs": ["hand", "pose"]
+            + (["glove"] if session.practice.glove_required else []),
             "server_timestamp_ms": round((store.clock() - session.created_at) * 1000),
         }
     )

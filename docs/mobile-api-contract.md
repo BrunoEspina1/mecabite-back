@@ -25,6 +25,11 @@ contrato con datos simulados mientras se implementa.
   encuadre no cuenta. `required_inputs` de `ready` es `["hand", "pose"]`.
 - Nuevo `feedback_code`: `adjust_framing` (el `message` dice qué corregir).
 - Nuevos errores de `POST /sessions`: `503 MODEL_NOT_AVAILABLE` y `503 SIGN_NOT_TRAINED`.
+- **Guante y correcciones:** el guante llega por BLE **a la laptop** (no al iPhone) y el backend
+  lo junta con cada observación. `feedback` agrega `corrections` (qué corregir: "Estira más el
+  dedo anular") y `glove` (estado del guante). Una ejecución que la cámara reconoce pero el
+  guante contradice se rechaza con sus correcciones. Con `GLOVE_REQUIRED=true`,
+  `required_inputs` incluye `"glove"` y sin guante el estado es `disconnected`.
 
 ### Cambios Respecto A 0.1.0
 
@@ -151,24 +156,33 @@ Pruebas rápidas para validar la orientación antes de integrar:
 - Prueba rápida: de frente a la cámara, los puntos 11 y 12 (hombros) y 0 (nariz) deben tener
   `visibility > 0.5`.
 
-### Guante — reservado
+### Guante
 
-El guante se está terminando de construir. **En el MVP `glove` siempre va en `null`** y los
-componentes de configuración y orientación se evalúan con la cámara.
-
-Formato preliminar para cuando esté listo (11 valores con nombre; cambiará cuando
-electrónica confirme unidades, rangos, frecuencia y tipo de conexión):
+El guante (ESP32) se conecta por **BLE a la laptop del backend** (`GLOVE_LIVE=true`), no al
+iPhone: **la app manda `glove: null`** y el backend toma las lecturas de los últimos
+`GLOVE_MAX_AGE_MS` (500 ms) según su reloj. Cada paquete BLE es una línea JSON:
 
 ```json
-{
-  "connected": true,
-  "sample_rate_hz": 15.0,
-  "values": {
-    "izq": 0.2, "der": 0.4, "arr": 0.8, "abj": 0.1, "giro_izq": 0.3, "giro_der": 0.2,
-    "pulgar": 1.0, "indice": 3.0, "medio": 3.0, "anular": 3.0, "menique": 3.0
-  }
-}
+{"emisor": 1, "valores": [0, 0, 0, 23, 0, 0, 3, 3, 3, 3, 3]}
 ```
+
+| Valores | Qué son |
+| --- | --- |
+| `izq, der` · `arr, abj` · `giro_izq, giro_der` | MPU: cada eje partido en dos valores positivos (grados). El backend los junta: `roll = der - izq`, `pitch = arr - abj`. El giro (`yaw`) se deriva con el tiempo y no se usa |
+| `pulgar, indice, medio, anular, menique` | Flexión: 1 = encogido, 2 = a medias, 3 = estirado |
+
+Fallas conocidas, ya consideradas en `expected` del catálogo: el medio no llega a 1 (con 2 ya
+está encogido), el pulgar marca 2 muy seguido, en la C todos los dedos marcan 3 (se revisa con
+la cámara) y en la Q pulgar e índice se quedan en 3.
+
+Para pruebas o datos simulados (RF-15) la observación puede traer la lectura; tiene prioridad
+sobre la de BLE:
+
+```json
+{ "connected": true, "values": [0, 0, 0, 23, 0, 0, 3, 3, 3, 3, 3] }
+```
+
+`values` también acepta los valores con nombre (`{"pulgar": 1, "indice": 3, ...}`).
 
 ### Tiempo, orden y frecuencia
 
@@ -374,7 +388,8 @@ anular, menique`. Responde con el mismo formato que el mensaje `feedback`.
 }
 ```
 
-`required_inputs` incluye `"glove"` cuando exista el guante.
+`required_inputs` incluye `"glove"` con `GLOVE_REQUIRED=true` (sin lecturas del guante la
+práctica no evalúa y responde `state: "disconnected"`).
 
 ### `observation` (app → backend)
 
@@ -432,9 +447,59 @@ exactamente 21 por mano.
   },
   "feedback_code": "hold_position",
   "message": "Mantén la posición",
+  "corrections": [],
+  "glove": {
+    "connected": true,
+    "fingers": { "pulgar": 3, "indice": 1, "medio": 2, "anular": 1, "menique": 1 },
+    "roll": -4.0,
+    "pitch": -43.0
+  },
   "processing_time_ms": 18
 }
 ```
+
+Ejemplo con algo que corregir (la cámara ve una A pero el meñique está estirado):
+
+```json
+{
+  "state": "candidate",
+  "correct": false,
+  "components": { "configuration": "incorrect", "orientation": "insufficient_data", "localization": "not_required", "movement": "not_required" },
+  "feedback_code": "wrong_configuration",
+  "message": "Encoge más el meñique",
+  "corrections": [
+    { "component": "configuration", "part": "menique", "action": "flex", "message": "Encoge más el meñique", "source": "glove" }
+  ]
+}
+```
+
+#### `corrections`
+
+Qué debe corregir la persona, de la más a la menos importante (máximo 2). **La app sí puede
+mostrar su `message`** (a diferencia del `message` general). Solo aparece una corrección que se
+mantiene 400 ms, para que no parpadee. En `rejected` son las que hicieron fallar el intento.
+
+| Campo | Valores |
+| --- | --- |
+| `component` | `configuration`, `orientation`, `localization` |
+| `part` | un dedo (`pulgar`, `indice`, `medio`, `anular`, `menique`), `hand` (varios dedos a la vez), `palm`, `fingers` (hacia dónde apuntan), `wrist` (inclinación del guante), `arm` |
+| `action` | `extend`, `flex` (dedo o mano), `curve`, `open` (dedos curvos de la C), `rotate_facing`, `rotate_side` (palma), `point_up`, `point_down` (dedos), `tilt_up`, `tilt_down`, `roll_left`, `roll_right` (muñeca), `raise` (brazo) |
+| `source` | `glove` o `camera`: qué la detectó |
+
+- **Configuración:** el guante compara cada dedo con `expected.glove_fingers` de la seña
+  (`signs.json`); donde el guante falla se usa la cámara (`expected.camera_fingers`).
+- **Orientación:** la cámara revisa si la palma se ve de frente o de lado y hacia dónde apuntan
+  los dedos; el guante compara su inclinación con `glove_reference.json`
+  (`vision glove-reference`), si existe para esa seña.
+- **Brazo** (`part: "arm"`): "Sube más el brazo". Es solo una sugerencia: no hace fallar.
+- Una ejecución que la cámara reconoce como la seña objetivo **no cuenta** si hay correcciones
+  de un componente del nivel: se responde `rejected` con ellas. En estáticas se puede corregir
+  sin bajar la mano: se vuelve a evaluar al sostenerla otra vez.
+
+#### `glove`
+
+`{"connected": false}` si no hay lecturas recientes; si hay, agrega `fingers` (1 a 3), `roll` y
+`pitch` (grados, mediana de los últimos 500 ms).
 
 - `sequence` indica a qué observación responde. Si el backend se atrasa puede saltarse
   observaciones viejas para no acumular retraso; con `sequence` la app correlaciona
@@ -456,7 +521,7 @@ Estados (`state`):
 | `approved` | Se cumplieron 3 ejecuciones correctas; las fallidas no reinician la cuenta (RF-10) |
 | `rejected` | La ejecución falló; `components` dice qué falló (RF-13) |
 | `no_hand` | No se detecta la mano |
-| `disconnected` | Falta una fuente requerida (por ejemplo, el guante cuando exista) |
+| `disconnected` | Falta una fuente requerida: el guante con `GLOVE_REQUIRED=true` |
 
 Estados de cada componente: `correct`, `incorrect`, `not_required`, `not_available`
 (la fuente no está disponible; **no** es un error del usuario) e `insufficient_data`.
@@ -555,7 +620,8 @@ irrecuperables:
       `mirrored` y `handedness` crudo. Pasar las dos pruebas de orientación.
 - [ ] Enviar cada cuadro, incluidos los que no tienen mano (`hands: []`).
 - [ ] `timestamp_ms` del momento de captura, monotónico y relativo al inicio de la sesión.
-- [ ] `glove: null` por ahora; `pose_landmarks` en todos los niveles.
+- [ ] `glove: null` (el guante va por BLE a la laptop); `pose_landmarks` en todos los niveles.
+- [ ] Mostrar `corrections[].message` bajo el título y el estado del guante (`glove.connected`).
 - [ ] Mostrar `message`, usar `feedback_code` para el apoyo visual y `progress` para la barra.
 - [ ] Tratar `not_available` como espera, no como fallo.
 - [ ] Reconectar a la misma sesión al volver de segundo plano.
@@ -577,8 +643,8 @@ irrecuperables:
 
 ## Pendientes
 
-- **Guante:** unidades, rangos, frecuencia y tipo de conexión; se integra cuando electrónica
-  lo termine.
+- **Guante:** validar con personas nuevas los rangos de `expected.glove_fingers` y generar
+  `glove_reference.json` con las grabaciones de `practica_guante`.
 - **Intérprete de LSM:** validar descripciones y patrones, y confirmar qué palabras usan
   dos manos. En el dataset de glosas usan ambas gracias, por favor y ayuda; hoy el catálogo
   marca gracias y por favor.

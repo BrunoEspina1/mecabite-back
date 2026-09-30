@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     # Guante BLE: valores del receptor ESP32 de `manitas/config/settings.py`.
     glove_device_name: str = "GuanteLSM"
     glove_characteristic_uuid: str = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+    # API: la laptop lee el guante por BLE y lo junta con cada observación del iPhone.
+    glove_live: bool = False  # conectar el guante al arrancar la API
+    glove_required: bool = False  # sin lecturas recientes la práctica no evalúa (`disconnected`)
+    glove_emitter: PositiveInt = 1  # emisor del guante de la mano que hace la seña
+    glove_max_age_ms: PositiveInt = 500  # lecturas más viejas cuentan como guante desconectado
+    glove_tilt_tolerance_deg: PositiveInt = 30  # desviación de inclinación permitida
+    # false: las correcciones de la cámara solo se muestran, no hacen fallar el intento.
+    feedback_camera_blocks: bool = True
 
 
 @lru_cache

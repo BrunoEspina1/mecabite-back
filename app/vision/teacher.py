@@ -1511,6 +1511,19 @@ def main() -> None:
     glove_practice_parser.add_argument("--no-body", action="store_true")
     glove_practice_parser.add_argument("--no-review", action="store_true")
 
+    reference_parser = subparsers.add_parser(
+        "glove-reference",
+        help="inclinación del guante por seña para las correcciones (de grabaciones o en vivo)",
+    )
+    reference_parser.add_argument("--sign", help="solo esta seña (obligatoria con --live)")
+    reference_parser.add_argument(
+        "--live", action="store_true", help="medir sosteniendo la seña con el guante conectado"
+    )
+    reference_parser.add_argument("--seconds", type=float, default=3.0)
+    reference_parser.add_argument(
+        "--source", type=Path, default=PRACTICE_DIR / "glove", help="grabaciones de practica_guante"
+    )
+
     clear_parser = subparsers.add_parser(
         "clear", help="borrar todo lo guardado por practice (no toca los datasets)"
     )
@@ -1586,6 +1599,10 @@ def main() -> None:
             body_enabled=not args.no_body,
             glove_enabled=True,
         )
+    elif args.command == "glove-reference":
+        from app.vision.glove_reference import run
+
+        run(args.sign, args.live, args.seconds, args.source)
     elif args.command == "clear":
         clear_practice(args.yes)
     else:

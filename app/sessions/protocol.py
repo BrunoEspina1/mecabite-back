@@ -55,12 +55,23 @@ class VisionIn(BaseModel):
     pose_landmarks: Annotated[list[Point4], Field(min_length=33, max_length=33)] | None = None
 
 
+class GloveIn(BaseModel):
+    """Lectura del guante dentro de la observación (pruebas y RF-15).
+
+    En la demo el guante llega por BLE a la laptop y la app manda `glove: null`.
+    """
+
+    connected: bool = True
+    # 11 valores en el orden de GLOVE_VALUES, o con nombre ({"indice": 3, ...}).
+    values: Annotated[list[float], Field(min_length=11, max_length=11)] | dict[str, float]
+
+
 class ObservationIn(BaseModel):
     type: Literal["observation"]
     sequence: NonNegativeInt
     timestamp_ms: Annotated[float, Field(ge=0)]
     vision: VisionIn
-    glove: dict | None = None
+    glove: GloveIn | None = None
 
 
 class EndSessionIn(BaseModel):

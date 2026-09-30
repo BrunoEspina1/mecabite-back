@@ -13,19 +13,34 @@ formas quietas del camino (la I al inicio de la J).
 Los puntos llegan normalizados a la imagen vertical que vio MediaPipe en el iPhone. Se
 convierten a las unidades de `HandTracker`/`BodyTracker` (vista en espejo, x y z en alturas
 de imagen), las mismas con las que se entrenaron los modelos.
+
+El guante (por BLE en la laptop, o en la observación) y la cámara se comparan con `expected` de
+la seña objetivo para dar correcciones concretas (`corrections`: "Estira más el dedo anular").
+Una ejecución que el modelo reconoce como la objetivo no cuenta si hay correcciones de un
+componente requerido: se rechaza diciendo qué corregir (RF-13, principio Indivisa).
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from app.catalog import COMPONENTS, Catalog, Sign
 from app.core.config import settings
-from app.sessions.protocol import ObservationIn, VisionIn
+from app.sessions.feedback import (
+    Correction,
+    CorrectionFilter,
+    GloveState,
+    evaluate,
+    glove_reference,
+)
+from app.sessions.protocol import GloveIn, ObservationIn, VisionIn
 from app.vision.body import BodyStatus, body_status
+from app.vision.glove import FINGERS, GLOVE_VALUES, GloveReading
 from app.vision.recognizer import Recognizer
 from app.vision.tracker import PRIMARY_LOST_MS, HandSlots
 
@@ -34,6 +49,15 @@ RESULT_SHOW_MS = 1500  # tiempo que se sigue reportando un resultado para que la
 WRONG_SIGN_MS = settings.vision_wrong_sign_ms  # otra seña sostenida esto antes de avisar
 # body.py escribe sin acentos (las fuentes de OpenCV solo tienen ASCII); la app sí los tiene.
 ACCENTS = {"camara": "cámara", "Alejate": "Aléjate", "Acercate": "Acércate", "Muevete": "Muévete"}
+MAX_CORRECTIONS = 2  # correcciones que se mandan a la vez: más confunden
+MOVEMENT_WINDOW_MS = 2000  # lecturas del guante que cuentan para una seña con movimiento
+WRONG_CODE = {
+    "configuration": "wrong_configuration",
+    "orientation": "wrong_orientation",
+    "localization": "wrong_localization",
+}
+# Pide las lecturas del guante de los últimos N ms (reloj del servidor).
+GloveSource = Callable[[float], list[GloveReading]]
 
 
 class ObservationError(ValueError):
@@ -69,6 +93,19 @@ def to_tracker_units(vision: VisionIn) -> tuple[list[TrackedHand], np.ndarray | 
     return hands, body, aspect
 
 
+def glove_readings(glove: GloveIn) -> list[GloveReading]:
+    """La lectura que trae la observación (pruebas y datos simulados)."""
+    if not glove.connected:
+        return []
+    values = glove.values
+    if isinstance(values, dict):
+        missing = [finger for finger in FINGERS if finger not in values]
+        if missing:
+            raise ObservationError(f"glove.values: faltan los dedos {', '.join(missing)}")
+        values = [float(values.get(name, 0.0)) for name in GLOVE_VALUES]
+    return [GloveReading.from_values(time.time() * 1000, values)]
+
+
 def app_text(message: str) -> str:
     for plain, accented in ACCENTS.items():
         message = message.replace(plain, accented)
@@ -87,14 +124,33 @@ class Result:
     correct: bool | None
     components: dict[str, str]
     until_ms: float
+    corrections: list[Correction] = field(default_factory=list)
 
 
 class PracticeSession:
-    def __init__(self, recognizer: Recognizer, catalog: Catalog, target: Sign | None):
-        """`target=None`: modo demo (reconoce cualquier seña del catálogo, RF-14)."""
+    def __init__(
+        self,
+        recognizer: Recognizer,
+        catalog: Catalog,
+        target: Sign | None,
+        glove_source: GloveSource | None = None,
+        glove_required: bool | None = None,
+    ):
+        """`target=None`: modo demo (reconoce cualquier seña del catálogo, RF-14).
+
+        `glove_source`: lecturas recientes del guante por BLE; la lectura de la observación, si
+        viene, tiene prioridad. Con `glove_required` la práctica no evalúa sin guante.
+        """
         self.recognizer = recognizer
         self.catalog = catalog
         self.target = target
+        self.glove_source = glove_source
+        self.glove_required = settings.glove_required if glove_required is None else glove_required
+        self.glove: GloveState | None = None
+        self.glove_history: deque[tuple[float, GloveState]] = deque(maxlen=512)
+        self.reference = glove_reference().get(target.id) if target else None
+        self.filter = CorrectionFilter()
+        self.live: list[Correction] = []  # correcciones estables del momento
         self.slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS)
         self.last_t_ms: float | None = None
         self.attempts = 0
@@ -128,12 +184,20 @@ class PracticeSession:
             body,
         )
         status = body_status(detection[0] if detection else None, body, aspect)
+        self.glove = self._read_glove(observation, t_ms)
+        self.live = self._live_corrections(detection, body, t_ms)
 
         if new_sign is not None:
             self.result = self._judge(new_sign, status, t_ms) or self.result
         elif self.recognizer.rejected:
             self.result = self._needs_both_hands(self.recognizer.rejected, t_ms)
         feedback = self._feedback(observation, detection is not None, status)
+        feedback["corrections"] = [
+            correction.to_json() for correction in self._shown(t_ms, detection is not None, status)
+        ]
+        feedback["glove"] = {"connected": self.glove is not None} | (
+            self.glove.to_json() if self.glove else {}
+        )
 
         elapsed = (time.perf_counter() - started) * 1000
         self.processing_ms.append(elapsed)
@@ -174,8 +238,25 @@ class PracticeSession:
                 until,
             )
 
+        if self.glove_required and self.glove is None:
+            self._hold_again(t_ms, 0)  # sin guante no se evalúa: el feedback dice `disconnected`
+            return None
         self.attempts += 1
         if label == self.target.data_label and status.framed:
+            blocking = self._blocking(self._attempt_corrections(t_ms))
+            if blocking:
+                self._hold_again(t_ms, RESULT_SHOW_MS)
+                return Result(
+                    "rejected",
+                    WRONG_CODE[blocking[0].component],
+                    blocking[0].message,
+                    predicted,
+                    confidence,
+                    False,
+                    self._components("correct", failed={c.component for c in blocking}),
+                    until,
+                    blocking,
+                )
             self.correct_attempts += 1
             self.consecutive += 1
             self.approved = self.consecutive >= APPROVE_AFTER
@@ -204,6 +285,19 @@ class PracticeSession:
                 until,
             )
         dynamic = self.target.type == "dynamic"
+        blocking = self._blocking(self.live)
+        if blocking:
+            return Result(
+                "rejected",
+                WRONG_CODE[blocking[0].component],
+                f"Se reconoció {self._name(label)}. {blocking[0].message}",
+                predicted,
+                confidence,
+                False,
+                self._components("insufficient_data", failed={c.component for c in blocking}),
+                until,
+                blocking,
+            )
         failed = "movement" if dynamic else "configuration"
         return Result(
             "rejected",
@@ -283,6 +377,15 @@ class PracticeSession:
             "feedback_code": None,
         }
 
+        if self.practice and self.glove_required and self.glove is None:
+            return (
+                base
+                | waiting
+                | {
+                    "state": "disconnected",
+                    "message": "Conecta el guante: no llegan sus datos",
+                }
+            )
         if not has_hand:
             return (
                 base
@@ -335,6 +438,23 @@ class PracticeSession:
                 }
             )
 
+        blocking = self._blocking(self.live)
+        if blocking:
+            sign = self.catalog.find(candidate) if candidate else None
+            return (
+                base
+                | waiting
+                | {
+                    "state": "candidate" if candidate else "waiting",
+                    "predicted_sign": sign.id if sign else None,
+                    "correct": False,
+                    "components": self._components(
+                        "insufficient_data", failed={c.component for c in blocking}
+                    ),
+                    "feedback_code": WRONG_CODE[blocking[0].component],
+                    "message": blocking[0].message,
+                }
+            )
         if not static:
             return (
                 base
@@ -374,8 +494,86 @@ class PracticeSession:
 
     # --- Ayudas -----------------------------------------------------------------------------
 
+    def _read_glove(self, observation: ObservationIn, t_ms: float) -> GloveState | None:
+        if observation.glove is not None:
+            readings = glove_readings(observation.glove)
+        elif self.glove_source is not None:
+            readings = self.glove_source(settings.glove_max_age_ms)
+        else:
+            readings = []
+        state = GloveState.from_readings(readings)
+        if state is not None:
+            self.glove_history.append((t_ms, state))
+        return state
+
+    def _live_corrections(
+        self, detection: tuple[np.ndarray, bool] | None, body: np.ndarray | None, t_ms: float
+    ) -> list[Correction]:
+        """Correcciones que se mantienen; durante un movimiento solo se revisan los dedos."""
+        if not self.practice or self.approved or detection is None:
+            return self.filter.update([], t_ms)
+        still = not self.recognizer.moving
+        corrections = evaluate(
+            self.target,
+            detection[0] if still else None,
+            body if still else None,
+            self.glove,
+            self.reference if still else None,
+        )
+        return self.filter.update(corrections, t_ms)
+
+    def _attempt_corrections(self, t_ms: float) -> list[Correction]:
+        """Qué falló en la ejecución que se acaba de reconocer.
+
+        Estática: el guante de este momento (ya es la mediana de los últimos ms; un dedo que se
+        movió al final todavía no pasa el filtro de parpadeo) más las correcciones estables.
+        Con movimiento: el guante a lo largo del trazo, contra la forma e inclinación de la seña.
+        """
+        if self.target.type == "static":
+            fresh = evaluate(self.target, None, None, self.glove, self.reference)
+            seen = {c.key for c in fresh}
+            return fresh + [c for c in self.live if c.key not in seen]
+        states = [state for when, state in self.glove_history if t_ms - when <= MOVEMENT_WINDOW_MS]
+        if not states:
+            return []
+        movement = GloveState(
+            fingers={f: float(np.median([s.fingers[f] for s in states])) for f in FINGERS},
+            roll=float(np.median([s.roll for s in states])),
+            pitch=float(np.median([s.pitch for s in states])),
+        )
+        return evaluate(self.target, None, None, movement, self.reference)
+
+    def _blocking(self, corrections: list[Correction]) -> list[Correction]:
+        """Correcciones que hacen fallar el intento: de componentes que evalúa el nivel."""
+        required = self.target.required_components if self.target else ()
+        return [
+            c
+            for c in corrections
+            if not c.hint
+            and c.component in required
+            and (c.source != "camera" or settings.feedback_camera_blocks)
+        ]
+
+    def _hold_again(self, t_ms: float, after_ms: float) -> None:
+        """La estática se vuelve a evaluar al sostenerla otra vez, pasados `after_ms`: así se
+        corrige sin bajar la mano (tras un rechazo, o al conectarse el guante)."""
+        if self.target.type != "static":
+            return
+        stabilizer = self.recognizer.stabilizer
+        stabilizer.confirmed = None
+        stabilizer.since = (t_ms + after_ms) / 1000
+
+    def _shown(self, t_ms: float, has_hand: bool, status: BodyStatus) -> list[Correction]:
+        if self.approved:
+            return []
+        if self.result is not None and t_ms < self.result.until_ms:
+            return self.result.corrections[:MAX_CORRECTIONS]
+        if not has_hand or status.issue:
+            return []
+        return self.live[:MAX_CORRECTIONS]
+
     def _components(
-        self, status: str, sign: Sign | None = None, failed: str | None = None
+        self, status: str, sign: Sign | None = None, failed: str | set[str] | None = None
     ) -> dict[str, str]:
         """Estado de cada componente de `sign` (por defecto la seña objetivo).
 
@@ -385,11 +583,12 @@ class PracticeSession:
         """
         sign = sign or self.target
         required = sign.required_components if sign else ()
+        failed = {failed} if isinstance(failed, str) else failed or set()
         components = {}
         for name in COMPONENTS:
             if name not in required:
                 components[name] = "not_required"
-            elif name == failed:
+            elif name in failed:
                 components[name] = "incorrect"
             elif name == "localization" and status == "correct":
                 components[name] = "not_available"

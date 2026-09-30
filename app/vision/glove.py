@@ -6,6 +6,8 @@ import asyncio
 import json
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 GLOVE_VALUES = [
@@ -21,9 +23,11 @@ GLOVE_VALUES = [
     "anular",
     "menique",
 ]
+FINGERS = ("pulgar", "indice", "medio", "anular", "menique")
 EMITTERS = (1, 2)
 MIN_GLOVE_PACKETS = 5
 MAX_LINE_BYTES = 1024
+FEED_HISTORY = 256  # lecturas que guarda GloveFeed (~8 s a 30 paquetes/s)
 
 
 class GloveCollector:
@@ -120,10 +124,72 @@ class GloveCollector:
             self.dropped += 1
             return
         packet = (int(time.time() * 1000), int(emitter), [float(value) for value in values])
-        with self._lock:
-            self.packets.append(packet)
+        self._store(packet)
         if self.verbose:
             print(f"Guante E{emitter}: {values}")
+
+    def _store(self, packet: tuple[int, int, list[float]]) -> None:
+        with self._lock:
+            self.packets.append(packet)
+
+
+@dataclass(frozen=True)
+class GloveReading:
+    """Una lectura del guante con nombre.
+
+    Dedos: 1 = encogido, 2 = a medias, 3 = estirado. El MPU manda cada eje partido en dos
+    valores positivos (grados): `izq`/`der`, `arr`/`abj` y `giro_izq`/`giro_der`; uno de los dos
+    vale 0. Aquí se juntan en un ángulo con signo por eje.
+    """
+
+    t_ms: float
+    fingers: dict[str, float]
+    roll: float  # der - izq: inclinación hacia los lados
+    pitch: float  # arr - abj: inclinación hacia arriba/abajo
+    yaw: float  # giro_der - giro_izq: se deriva con el tiempo; no se usa para corregir
+
+    @classmethod
+    def from_values(cls, t_ms: float, values: list[float]) -> GloveReading:
+        named = dict(zip(GLOVE_VALUES, values, strict=True))
+        return cls(
+            t_ms=t_ms,
+            fingers={finger: named[finger] for finger in FINGERS},
+            roll=named["der"] - named["izq"],
+            pitch=named["arr"] - named["abj"],
+            yaw=named["giro_der"] - named["giro_izq"],
+        )
+
+
+class GloveFeed(GloveCollector):
+    """Lector BLE para la API: guarda solo las lecturas recientes de un emisor.
+
+    Los paquetes llevan la hora de la laptop al llegar (no la del iPhone): cada observación
+    toma las lecturas de los últimos milisegundos según el reloj del servidor.
+    """
+
+    def __init__(
+        self,
+        device_name: str,
+        characteristic_uuid: str,
+        emitter: int = 1,
+        history: int = FEED_HISTORY,
+    ):
+        super().__init__(device_name, characteristic_uuid)
+        self.emitter = emitter
+        self._recent: deque[GloveReading] = deque(maxlen=history)
+
+    def _store(self, packet: tuple[int, int, list[float]]) -> None:
+        t_ms, emitter, values = packet
+        if emitter != self.emitter:
+            return
+        with self._lock:
+            self._recent.append(GloveReading.from_values(t_ms, values))
+
+    def recent(self, window_ms: float, now_ms: float | None = None) -> list[GloveReading]:
+        """Lecturas de los últimos `window_ms`; vacío si el guante no manda nada."""
+        now_ms = time.time() * 1000 if now_ms is None else now_ms
+        with self._lock:
+            return [reading for reading in self._recent if now_ms - reading.t_ms <= window_ms]
 
 
 def write_packets(path: Path, packets: list[tuple[int, int, list[float]]]) -> None:

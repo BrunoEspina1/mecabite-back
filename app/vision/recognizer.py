@@ -88,7 +88,7 @@ class SignStabilizer:
     def progress(self, now: float) -> float:
         if self.candidate is None or self.candidate == self.confirmed:
             return 0.0
-        return min((now - self.since) / self.hold_seconds, 1.0)
+        return min(max((now - self.since) / self.hold_seconds, 0.0), 1.0)
 
 
 class Recognizer:

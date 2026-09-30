@@ -134,6 +134,21 @@ página para revisar los 4 segundos. El CSV conserva todos los paquetes.
 personales, solo para desarrollo, con consentimiento de quien graba (en la app el video no se
 guarda, RNF-10).
 
+### Correcciones con guante y cámara (RF-13)
+
+La práctica por API dice qué corregir (`corrections` en el `feedback`): "Estira más el dedo
+anular", "Gira la palma hacia la cámara", "Inclina la mano hacia abajo", "Sube más el brazo".
+Cómo debe verse cada seña está en `expected` de [`app/catalog/signs.json`](app/catalog/signs.json)
+(dedos del guante, dedos y orientación con la cámara). Para usar el guante en la API:
+
+```bash
+GLOVE_LIVE=true GLOVE_REQUIRED=true uv run fastapi dev app/main.py --host 0.0.0.0
+vision glove-reference                  # inclinación por seña con las grabaciones de practica_guante
+vision glove-reference --live --sign a  # o midiendo en vivo con la seña bien hecha
+```
+
+`glove-reference` también avisa si los dedos grabados no coinciden con `expected.glove_fingers`.
+
 ### Cuerpo: encuadre y localización (RF-03)
 
 `demo`, `live`, `practice` y `collect` detectan también el cuerpo (MediaPipe Pose Landmarker
