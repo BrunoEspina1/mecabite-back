@@ -694,3 +694,90 @@ def test_input_log_prints_both_hands_and_gloves(
     assert "práctica a: manos: principal=izquierda" in line
     assert "guante der E1: dedos 3-1-2-1-3" in line
     assert "guante izq E2: dedos 3-1-2-1-1" in line
+
+
+# --- Guante solo (`glove_confirms`) ---------------------------------------------------------
+
+REFERENCES = {"enie": {"roll": 34.0, "pitch": -154.0}, "y": {"roll": 72.0, "pitch": -28.0}}
+# pitch = arr - abj y roll = der - izq, como los manda el ESP32.
+ENIE_GLOVE = {
+    "pulgar": 3,
+    "indice": 3,
+    "medio": 3,
+    "anular": 1,
+    "menique": 1,
+    "abj": 154,
+    "der": 34,
+}
+Y_GLOVE = {"pulgar": 3, "indice": 1, "medio": 2, "anular": 1, "menique": 3, "abj": 28, "der": 72}
+
+
+WITH_ENIE = Models(FakeClassifier("A"), FakeClassifier("Ñ"), "vision-test")
+
+
+@pytest.fixture
+def references(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.sessions.practice.glove_reference", lambda: REFERENCES)
+
+
+def enie(**values: float) -> dict:
+    return {"values": ENIE_GLOVE | values}
+
+
+@pytest.mark.parametrize("models", [WITH_ENIE])
+@pytest.mark.parametrize("tilt", [{}, {"abj": 0, "arr": 178}])  # -154° o brincando a +178°
+def test_the_glove_alone_counts_the_enie_when_the_camera_loses_the_hand(
+    client: TestClient, references: None, tilt: dict
+) -> None:
+    session = create(client, target="enie")
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        held = player.frames(3.0, hand=False, glove=enie(**tilt))
+        player.frames(0.5, hand=False, glove=enie(anular=3))  # sale de la posición
+        again = player.frames(1.2, hand=False, glove=enie(**tilt))
+        websocket.send_json({"type": "end_session", "reason": "user_finished"})
+        summary = websocket.receive_json()
+
+    assert [r["message"] for r in held if r["state"] == "confirmed"][0] == "¡Bien! 1 de 3"
+    assert all(reply["state"] != "no_hand" for reply in held)
+    assert held[-1]["message"] == "Relaja la mano y vuelve a hacer la seña"
+    assert any(reply["message"] == "¡Bien! 2 de 3" for reply in again)
+    assert (summary["attempts"], summary["correct_attempts"]) == (2, 2)
+
+
+@pytest.mark.parametrize("models", [WITH_ENIE])
+def test_the_glove_alone_needs_the_right_tilt(client: TestClient, references: None) -> None:
+    session = create(client, target="enie")
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        replies = Player(websocket).frames(2.0, hand=False, glove=enie(abj=100))
+
+    assert all(reply["state"] != "confirmed" for reply in replies)
+    assert replies[-1]["message"] == "Inclina la mano hacia abajo"
+
+
+@pytest.mark.parametrize("models", [WITH_ENIE])
+def test_the_left_hand_has_no_reference_so_it_needs_the_camera(
+    client: TestClient, references: None
+) -> None:
+    session = create(client, target="enie", dominant_hand="left")
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        replies = Player(websocket).frames(2.0, hand=False, glove=enie())
+
+    assert {reply["state"] for reply in replies} == {"no_hand"}
+
+
+@pytest.mark.parametrize("models", [Models(FakeClassifier("Y"), None, "vision-test")])
+def test_the_camera_and_the_glove_count_one_held_y_once(
+    client: TestClient, references: None
+) -> None:
+    session = create(client, target="y")
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        Player(websocket).frames(VOTE_MS / 1000 + HOLD_SECONDS + 2.0, glove={"values": Y_GLOVE})
+        websocket.send_json({"type": "end_session", "reason": "user_finished"})
+        summary = websocket.receive_json()
+
+    assert (summary["attempts"], summary["correct_attempts"]) == (1, 1)

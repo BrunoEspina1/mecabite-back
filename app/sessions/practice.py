@@ -18,6 +18,11 @@ El guante (por BLE en la laptop, o en la observación) y la cámara se comparan 
 la seña objetivo para dar correcciones concretas (`corrections`: "Estira más el dedo anular").
 Una ejecución que el modelo reconoce como la objetivo no cuenta si hay correcciones de un
 componente requerido: se rechaza diciendo qué corregir (RF-13, principio Indivisa).
+
+Las señas con `expected.glove_confirms` (la Ñ, que la cámara pierde con la mano hacia abajo)
+también cuentan con el guante solo: dedos e inclinación bien durante `GLOVE_CONFIRM_MS`, aunque
+la cámara no vea la mano. No revisa el movimiento. Para volver a contar hay que salir de la
+posición.
 """
 
 from __future__ import annotations
@@ -35,7 +40,9 @@ from app.sessions.feedback import (
     Correction,
     CorrectionFilter,
     GloveState,
+    angle_median,
     evaluate,
+    glove_matches,
     glove_reference,
 )
 from app.sessions.protocol import GloveIn, ObservationIn, VisionIn
@@ -52,6 +59,9 @@ WRONG_SIGN_MS = settings.vision_wrong_sign_ms  # otra seña sostenida esto antes
 ACCENTS = {"camara": "cámara", "Alejate": "Aléjate", "Acercate": "Acércate", "Muevete": "Muévete"}
 MAX_CORRECTIONS = 2  # correcciones que se mandan a la vez: más confunden
 MOVEMENT_WINDOW_MS = 2000  # lecturas del guante que cuentan para una seña con movimiento
+GLOVE_CONFIRM_MS = 1000  # con `glove_confirms`: tiempo que el guante sostiene la seña
+GLOVE_CONFIRM_SHARE = 0.8  # parte de esas lecturas que deben estar bien
+GLOVE_REARM_MS = 300  # tiempo fuera de la posición para poder volver a contar
 WRONG_CODE = {
     "configuration": "wrong_configuration",
     "orientation": "wrong_orientation",
@@ -171,6 +181,10 @@ class PracticeSession:
         self.reference = (
             glove_reference().get(target.id) if target and not self.dominant_left else None
         )
+        # Con `glove_confirms` el guante solo cuenta la seña; necesita la inclinación de referencia.
+        self.glove_confirms = bool(target and target.expected.glove_confirms and self.reference)
+        self.glove_armed = True  # False desde que se cuenta hasta salir de la posición
+        self.glove_since = float("-inf")  # lecturas anteriores no cuentan para el guante solo
         self.filter = CorrectionFilter()
         self.live: list[Correction] = []  # correcciones estables del momento
         mode = f"práctica {target.id}" if target else "demo"
@@ -213,12 +227,16 @@ class PracticeSession:
         )
         status = body_status(detection[0] if detection else None, body, aspect)
         self.glove = self._read_glove(observation, t_ms)
+        self._rearm_glove(t_ms)
         self.live = self._live_corrections(detection, body, t_ms)
 
         if new_sign is not None:
             self.result = self._judge(new_sign, status, t_ms) or self.result
         elif self.recognizer.rejected:
             self.result = self._needs_both_hands(self.recognizer.rejected, t_ms)
+        elif self._glove_confirmed(t_ms):
+            self.attempts += 1
+            self.result = self._count_correct(self.target.id, None, t_ms + RESULT_SHOW_MS)
         feedback = self._feedback(observation, detection is not None, status)
         feedback["corrections"] = [
             correction.to_json() for correction in self._shown(t_ms, detection is not None, status)
@@ -270,6 +288,8 @@ class PracticeSession:
         if self.glove_required and self.glove is None:
             self._hold_again(t_ms, 0)  # sin guante no se evalúa: el feedback dice `disconnected`
             return None
+        if label == self.target.data_label and self.glove_confirms and not self.glove_armed:
+            return None  # el guante ya contó esta ejecución
         self.attempts += 1
         if label == self.target.data_label and status.framed:
             blocking = self._blocking(self._attempt_corrections(t_ms))
@@ -286,21 +306,7 @@ class PracticeSession:
                     until,
                     blocking,
                 )
-            self.correct_attempts += 1
-            self.consecutive += 1
-            self.approved = self.consecutive >= APPROVE_AFTER
-            return Result(
-                "approved" if self.approved else "confirmed",
-                "approved" if self.approved else "correct",
-                "¡Seña aprobada!"
-                if self.approved
-                else f"¡Bien! {self.consecutive} de {APPROVE_AFTER}",
-                predicted,
-                confidence,
-                True,
-                self._components("correct"),
-                until,
-            )
+            return self._count_correct(predicted, confidence, until)
 
         if label == self.target.data_label:
             return Result(
@@ -339,6 +345,50 @@ class PracticeSession:
             self._components("insufficient_data", failed=failed),
             until,
         )
+
+    def _count_correct(
+        self, predicted: str | None, confidence: float | None, until: float
+    ) -> Result:
+        """Una ejecución correcta (de la cámara o del guante solo), ya contada en `attempts`."""
+        self.correct_attempts += 1
+        self.consecutive += 1
+        self.approved = self.consecutive >= APPROVE_AFTER
+        self.glove_armed = False
+        return Result(
+            "approved" if self.approved else "confirmed",
+            "approved" if self.approved else "correct",
+            "¡Seña aprobada!" if self.approved else f"¡Bien! {self.consecutive} de {APPROVE_AFTER}",
+            predicted,
+            confidence,
+            True,
+            self._components("correct"),
+            until,
+        )
+
+    def _glove_confirmed(self, t_ms: float) -> bool:
+        """El guante sostuvo la seña bien (dedos e inclinación) durante `GLOVE_CONFIRM_MS`."""
+        if not self.glove_confirms or self.approved or not self.glove_armed:
+            return False
+        recent = [
+            (when, state)
+            for when, state in self.glove_history
+            if t_ms - when <= GLOVE_CONFIRM_MS and when >= self.glove_since
+        ]
+        if not recent or t_ms - recent[0][0] < GLOVE_CONFIRM_MS * GLOVE_CONFIRM_SHARE:
+            return False
+        good = sum(glove_matches(self.target, state, self.reference) for _, state in recent)
+        return good >= GLOVE_CONFIRM_SHARE * len(recent)
+
+    def _rearm_glove(self, t_ms: float) -> None:
+        """Tras contar, el guante vuelve a contar al salir de la posición `GLOVE_REARM_MS`."""
+        if not self.glove_confirms:
+            return
+        if self.glove is None:
+            self.glove_armed, self.glove_since = True, t_ms
+            return
+        recent = [state for when, state in self.glove_history if t_ms - when <= GLOVE_REARM_MS]
+        if not any(glove_matches(self.target, state, self.reference) for state in recent):
+            self.glove_armed, self.glove_since = True, t_ms
 
     def _needs_both_hands(self, label: str, t_ms: float) -> Result:
         sign = self.catalog.find(label)
@@ -415,6 +465,8 @@ class PracticeSession:
                     "message": "Conecta el guante: no llegan sus datos",
                 }
             )
+        if not has_hand and self._glove_only():
+            return base | waiting | self._glove_only_feedback()
         if not has_hand:
             return (
                 base
@@ -558,9 +610,17 @@ class PracticeSession:
     def _live_corrections(
         self, detection: tuple[np.ndarray, bool] | None, body: np.ndarray | None, t_ms: float
     ) -> list[Correction]:
-        """Correcciones que se mantienen; durante un movimiento solo se revisan los dedos."""
-        if not self.practice or self.approved or detection is None or self.only_other_hand:
+        """Correcciones que se mantienen; durante un movimiento solo se revisan los dedos.
+
+        Sin mano a la vista solo corrige el guante, y solo en señas que él puede contar solo.
+        """
+        if not self.practice or self.approved or self.only_other_hand:
             return self.filter.update([], t_ms)
+        if detection is None:
+            if not self._glove_only():
+                return self.filter.update([], t_ms)
+            glove_only = evaluate(self.target, None, None, self.glove, self.reference)
+            return self.filter.update(glove_only, t_ms)
         still = not self.recognizer.moving
         corrections = evaluate(
             self.target,
@@ -589,8 +649,8 @@ class PracticeSession:
             return []
         movement = GloveState(
             fingers={f: float(np.median([s.fingers[f] for s in states])) for f in FINGERS},
-            roll=float(np.median([s.roll for s in states])),
-            pitch=float(np.median([s.pitch for s in states])),
+            roll=angle_median([s.roll for s in states]),
+            pitch=angle_median([s.pitch for s in states]),
         )
         return evaluate(self.target, None, None, movement, self.reference)
 
@@ -619,9 +679,33 @@ class PracticeSession:
             return []
         if self.result is not None and t_ms < self.result.until_ms:
             return self.result.corrections[:MAX_CORRECTIONS]
-        if not has_hand or status.issue:
+        if not has_hand:
+            return self.live[:MAX_CORRECTIONS] if self._glove_only() else []
+        if status.issue:
             return []
         return self.live[:MAX_CORRECTIONS]
+
+    def _glove_only(self) -> bool:
+        """La seña se puede revisar sin cámara: `glove_confirms` y el guante mandando datos."""
+        return self.glove_confirms and self.glove is not None
+
+    def _glove_only_feedback(self) -> dict:
+        """Mensaje sin mano a la vista cuando el guante revisa la seña solo."""
+        if not self.glove_armed:
+            return {"message": "Relaja la mano y vuelve a hacer la seña"}
+        blocking = self._blocking(self.live)
+        if blocking:
+            return {
+                "correct": False,
+                "components": self._components(
+                    "insufficient_data", failed={c.component for c in blocking}
+                ),
+                "feedback_code": WRONG_CODE[blocking[0].component],
+                "message": blocking[0].message,
+            }
+        if glove_matches(self.target, self.glove, self.reference):
+            return {"feedback_code": "hold_position", "message": "Mantén la posición"}
+        return {"message": f"Haz la seña {self.target.display_name}"}
 
     def _components(
         self, status: str, sign: Sign | None = None, failed: str | set[str] | None = None

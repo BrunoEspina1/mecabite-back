@@ -57,6 +57,24 @@ def test_catalog_rejects_duplicated_ids(tmp_path) -> None:
         load_catalog(path)
 
 
+@pytest.mark.parametrize(
+    ("expected", "error"),
+    [
+        ({"glove_margin": 1.5}, "glove_margin"),
+        ({"tilt_tolerance_deg": 0}, "tilt_tolerance_deg"),
+        ({"glove_confirms": True}, "glove_confirms necesita glove_fingers"),
+    ],
+)
+def test_catalog_rejects_bad_glove_settings(tmp_path, expected: dict, error: str) -> None:
+    data = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    data["signs"][0]["expected"] = expected
+    path = tmp_path / "signs.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        load_catalog(path)
+
+
 def test_vision_catalog_maps_folders_to_training_classes() -> None:
     catalog = load_vision_catalog(extras_path=None)
 

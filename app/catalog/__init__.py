@@ -45,6 +45,13 @@ class Expected:
     camera_fingers: dict[str, str]
     palm: str | None  # facing | side
     pointing: str | None  # up | down
+    # Cuánto puede pasarse un dedo de `glove_fingers` antes de pedir corregirlo.
+    glove_margin: float = 0.25
+    # Grados que la inclinación puede alejarse de la referencia (None: GLOVE_TILT_TOLERANCE_DEG).
+    tilt_tolerance_deg: float | None = None
+    # En práctica, el guante solo (dedos e inclinación sostenidos) cuenta la seña aunque la
+    # cámara no la confirme o no vea la mano.
+    glove_confirms: bool = False
 
 
 NO_EXPECTATION = Expected({}, {}, None, None)
@@ -95,7 +102,15 @@ def _expected(sign_id: str, item: dict) -> Expected:
     def fail(message: str) -> ValueError:
         return ValueError(f"`expected` de {sign_id!r}: {message}")
 
-    unknown = set(item) - {"glove_fingers", "camera_fingers", "palm", "pointing"}
+    unknown = set(item) - {
+        "glove_fingers",
+        "camera_fingers",
+        "palm",
+        "pointing",
+        "glove_margin",
+        "tilt_tolerance_deg",
+        "glove_confirms",
+    }
     if unknown:
         raise fail(f"campos desconocidos {unknown}")
     glove = item.get("glove_fingers", {})
@@ -113,11 +128,25 @@ def _expected(sign_id: str, item: dict) -> Expected:
         raise fail(f"palm debe ser {' | '.join(PALMS)}")
     if item.get("pointing") not in (None, *POINTING):
         raise fail(f"pointing debe ser {' | '.join(POINTING)}")
+    margin = item.get("glove_margin", 0.25)
+    if not isinstance(margin, (int, float)) or not 0 <= margin < 1:
+        raise fail(f"glove_margin debe estar entre 0 y 1, no {margin!r}")
+    tolerance = item.get("tilt_tolerance_deg")
+    if tolerance is not None and (not isinstance(tolerance, (int, float)) or tolerance <= 0):
+        raise fail(f"tilt_tolerance_deg debe ser positivo, no {tolerance!r}")
+    confirms = item.get("glove_confirms", False)
+    if not isinstance(confirms, bool):
+        raise fail("glove_confirms debe ser true o false")
+    if confirms and not glove:
+        raise fail("glove_confirms necesita glove_fingers")
     return Expected(
         glove_fingers={finger: tuple(sorted(values)) for finger, values in glove.items()},
         camera_fingers=dict(camera),
         palm=item.get("palm"),
         pointing=item.get("pointing"),
+        glove_margin=float(margin),
+        tilt_tolerance_deg=None if tolerance is None else float(tolerance),
+        glove_confirms=confirms,
     )
 
 

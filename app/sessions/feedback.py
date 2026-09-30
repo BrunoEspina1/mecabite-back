@@ -79,6 +79,18 @@ class Correction:
         return data
 
 
+def angle_diff(angle: float, reference: float) -> float:
+    """`angle - reference` en (-180, 180]: el MPU pasa de -180 a 180 al voltear la mano."""
+    return -((reference - angle + 180) % 360 - 180)
+
+
+def angle_median(angles: list[float]) -> float:
+    """Mediana que no se rompe si las lecturas brincan entre -180 y 180."""
+    first = angles[0]
+    middle = first + median(angle_diff(angle, first) for angle in angles)
+    return angle_diff(middle, 0)
+
+
 @dataclass(frozen=True)
 class GloveState:
     """Lo que dice el guante en este momento (mediana de las lecturas recientes)."""
@@ -93,8 +105,8 @@ class GloveState:
             return None
         return cls(
             fingers={f: median(r.fingers[f] for r in readings) for f in FINGERS},
-            roll=median(r.roll for r in readings),
-            pitch=median(r.pitch for r in readings),
+            roll=angle_median([r.roll for r in readings]),
+            pitch=angle_median([r.pitch for r in readings]),
         )
 
     def to_json(self) -> dict:
@@ -132,10 +144,22 @@ def evaluate(
         corrections += _camera_fingers(expected, hand)
         corrections += _camera_orientation(expected, hand)
     if glove is not None and reference:
-        corrections += _glove_tilt(glove, reference)
+        corrections += _glove_tilt(glove, reference, _tilt_tolerance(expected))
     if hand is not None and body is not None:
         corrections += _arm_height(hand, body)
     return corrections
+
+
+def glove_matches(sign: Sign, glove: GloveState, reference: dict) -> bool:
+    """El guante solo dice que la seña está bien: dedos e inclinación dentro del margen."""
+    expected = sign.expected
+    return not _glove_fingers(expected, glove) and not _glove_tilt(
+        glove, reference, _tilt_tolerance(expected)
+    )
+
+
+def _tilt_tolerance(expected: Expected) -> float:
+    return expected.tilt_tolerance_deg or settings.glove_tilt_tolerance_deg
 
 
 # --- Configuración ------------------------------------------------------------------------
@@ -148,9 +172,9 @@ def _glove_fingers(expected: Expected, glove: GloveState) -> list[Correction]:
         if not allowed:
             continue
         value = glove.fingers[finger]
-        if value < min(allowed) - 0.25:
+        if value < min(allowed) - expected.glove_margin:
             wrong.append((finger, "extend"))
-        elif value > max(allowed) + 0.25:
+        elif value > max(allowed) + expected.glove_margin:
             wrong.append((finger, "flex"))
     return _finger_corrections(wrong, "glove")
 
@@ -284,10 +308,9 @@ def _camera_orientation(expected: Expected, points: np.ndarray) -> list[Correcti
     return corrections
 
 
-def _glove_tilt(glove: GloveState, reference: dict) -> list[Correction]:
-    tolerance = settings.glove_tilt_tolerance_deg
+def _glove_tilt(glove: GloveState, reference: dict, tolerance: float) -> list[Correction]:
     corrections = []
-    pitch = glove.pitch - reference["pitch"]
+    pitch = angle_diff(glove.pitch, reference["pitch"])
     if pitch > tolerance:
         corrections.append(
             Correction("orientation", "wrist", "tilt_down", "Inclina la mano hacia abajo", "glove")
@@ -296,7 +319,7 @@ def _glove_tilt(glove: GloveState, reference: dict) -> list[Correction]:
         corrections.append(
             Correction("orientation", "wrist", "tilt_up", "Inclina la mano hacia arriba", "glove")
         )
-    roll = glove.roll - reference["roll"]
+    roll = angle_diff(glove.roll, reference["roll"])
     if roll > tolerance:
         corrections.append(
             Correction(

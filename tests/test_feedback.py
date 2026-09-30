@@ -9,8 +9,10 @@ from app.catalog import CATALOG_PATH, get_catalog, load_catalog
 from app.sessions.feedback import (
     CorrectionFilter,
     GloveState,
+    angle_median,
     camera_finger_states,
     evaluate,
+    glove_matches,
 )
 from app.vision.glove import GLOVE_VALUES, GloveReading
 
@@ -127,6 +129,26 @@ def test_glove_tilt_against_the_reference() -> None:
 
     tilted = glove(pitch=-40.0, roll=-45.0, **A_FIST)
     assert messages("a", glove=tilted, reference=reference) == ["Gira la muñeca hacia la derecha"]
+
+
+def test_tilt_wraps_around_when_the_hand_points_down() -> None:
+    """La Ñ se hace con la mano hacia abajo (-154°): el MPU puede brincar a +178°."""
+    enie = {"indice": 3, "medio": 3, "anular": 1, "menique": 1}
+    reference = {"pitch": -154.0, "roll": 34.0}
+    assert messages("enie", glove=glove(pitch=178.0, roll=34.0, **enie), reference=reference) == []
+    assert messages("enie", glove=glove(pitch=150.0, roll=34.0, **enie), reference=reference) == [
+        "Inclina la mano hacia arriba"
+    ]
+    assert angle_median([-175.0, 178.0, -179.0, 176.0, -177.0]) == -179.0
+
+
+def test_y_has_more_margin_on_the_fingers_and_the_tilt() -> None:
+    y = CATALOG.get("y")
+    reference = {"pitch": -28.0, "roll": 72.0}
+    loose = glove(pitch=10.0, roll=30.0, pulgar=2, indice=2.4, medio=2.4, anular=2.4, menique=2.6)
+    assert glove_matches(y, loose, reference)
+    assert not glove_matches(y, glove(pitch=-28.0, roll=72.0, indice=3, menique=3), reference)
+    assert not glove_matches(y, glove(pitch=30.0, roll=72.0, indice=1, anular=1), reference)
 
 
 def test_low_hand_is_only_a_hint_to_raise_the_arm() -> None:
