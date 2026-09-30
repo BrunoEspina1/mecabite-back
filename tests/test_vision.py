@@ -1,4 +1,5 @@
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -112,6 +113,14 @@ def test_dynamic_practice_saves_clip_since_sign_start(tmp_path, monkeypatch) -> 
     assert ok
     means = decoded.mean(axis=(0, 1))
     assert means[2] > means[1] + 60  # el canal rojo no se guarda con dominante verde
+
+
+def test_custom_video_import_uses_requested_sign_and_participant() -> None:
+    identity = teacher._video_import_identity(
+        Path("mama_01_normal.mp4"), label="mama", participant="mama01"
+    )
+
+    assert identity == ("mama", "mama01_mama_mama_01_normal")
 
 
 @pytest.mark.parametrize(

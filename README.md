@@ -66,7 +66,8 @@ En `demo` y `live` la seña aparece en el recuadro de la esquina superior derech
 - **Estáticas**: al sostenerla `VISION_HOLD_MS` (1 s por defecto, como pide RF-06; la
   barra debajo muestra el avance).
 - **Con movimiento** (J, K, Ñ, Q, X, Z): al terminar el movimiento y dejar la mano quieta un
-  instante; se compara la trayectoria completa de los últimos 2 s.
+  instante; hay hasta 2.5 s para terminarla y se compara la ventana de trayectoria de los últimos
+  2 s.
 
 `vision train` entrena dos modelos (MLP) y los evalúa dejando fuera personas completas:
 `models/vision/static.joblib` y `models/vision/dynamic.joblib`. Las señas vienen de
@@ -179,6 +180,9 @@ vision import-videos --source data/raw/MSL-dynamic-signs
 vision import-videos --source data/raw/MSL-dynamic-signs-profile
 vision train
 ```
+
+Para videos propios con nombres distintos al formato MSL, indica la etiqueta y la persona;
+por ejemplo: `vision import-videos --source data/raw/mama --label mama --participant mama01`.
 
 Las letras estáticas (A–Y) vienen de MSL-ABC, copiadas como landmarks
 (`msl-abc__S<persona>.csv`) desde el proyecto Manitas.

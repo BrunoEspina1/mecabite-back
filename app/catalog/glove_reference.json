@@ -1,0 +1,126 @@
+{
+  "_nota": "Inclinación (grados) del guante con cada seña bien hecha. roll = der - izq, pitch = arr - abj. La generan `vision glove-reference`; las correcciones avisan si la mano se aleja más de GLOVE_TILT_TOLERANCE_DEG.",
+  "updated": "2026-09-30T06:47:41",
+  "signs": {
+    "a": {
+      "roll": 6.0,
+      "pitch": 6.0,
+      "fingers": {
+        "pulgar": 3,
+        "indice": 1,
+        "medio": 2,
+        "anular": 1,
+        "menique": 1
+      },
+      "samples": 425
+    },
+    "b": {
+      "roll": -3.0,
+      "pitch": -2.0,
+      "fingers": {
+        "pulgar": 1,
+        "indice": 3,
+        "medio": 3,
+        "anular": 3,
+        "menique": 3
+      },
+      "samples": 419
+    },
+    "c": {
+      "roll": -3.0,
+      "pitch": -20.0,
+      "fingers": {
+        "pulgar": 3,
+        "indice": 3,
+        "medio": 3,
+        "anular": 3,
+        "menique": 3
+      },
+      "samples": 282
+    },
+    "j": {
+      "roll": -6.0,
+      "pitch": -11.0,
+      "fingers": {
+        "pulgar": 2,
+        "indice": 1,
+        "medio": 2,
+        "anular": 1,
+        "menique": 3
+      },
+      "samples": 938
+    },
+    "l": {
+      "roll": -6.0,
+      "pitch": -3.0,
+      "fingers": {
+        "pulgar": 3,
+        "indice": 3,
+        "medio": 2,
+        "anular": 1,
+        "menique": 1
+      },
+      "samples": 288
+    },
+    "q": {
+      "roll": 4.0,
+      "pitch": -107.0,
+      "fingers": {
+        "pulgar": 3,
+        "indice": 3,
+        "medio": 2,
+        "anular": 1,
+        "menique": 1
+      },
+      "samples": 571
+    },
+    "x": {
+      "roll": 63.0,
+      "pitch": -72.0,
+      "fingers": {
+        "pulgar": 2,
+        "indice": 2,
+        "medio": 2,
+        "anular": 1,
+        "menique": 1
+      },
+      "samples": 556
+    },
+    "y": {
+      "roll": 72.0,
+      "pitch": -28.0,
+      "fingers": {
+        "pulgar": 3,
+        "indice": 1,
+        "medio": 2,
+        "anular": 1,
+        "menique": 3
+      },
+      "samples": 281
+    },
+    "z": {
+      "roll": 12.0,
+      "pitch": -44.0,
+      "fingers": {
+        "pulgar": 1,
+        "indice": 3,
+        "medio": 2,
+        "anular": 1,
+        "menique": 1
+      },
+      "samples": 626
+    },
+    "enie": {
+      "roll": 34.0,
+      "pitch": -154.0,
+      "fingers": {
+        "pulgar": 3,
+        "indice": 3,
+        "medio": 3,
+        "anular": 1,
+        "menique": 1
+      },
+      "samples": 290
+    }
+  }
+}

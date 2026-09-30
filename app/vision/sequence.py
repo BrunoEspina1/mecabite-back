@@ -29,6 +29,7 @@ from app.vision.features import (
 RATE_HZ = 15
 WINDOW_SECONDS = 2.0  # los videos del dataset duran 1.6-2.5 s
 WINDOW = round(RATE_HZ * WINDOW_SECONDS)
+MAX_MOVEMENT_DURATION_MS = 2500  # tiempo máximo para terminar una trayectoria antes de clasificar
 TRAJECTORY_POINTS = 5
 INDEX_TIP = 8
 MAX_GAP_MS = 300  # si la mano se pierde más que esto, la secuencia empieza de nuevo
@@ -180,9 +181,9 @@ class DynamicDetector:
     """Clasifica cada movimiento una sola vez, cuando termina.
 
     Un movimiento empieza cuando la mano supera MOVING_SPEED y termina cuando lleva
-    END_STILL_MS por debajo de STILL_SPEED (o al durar WINDOW_SECONDS). Entonces se compara la
-    trayectoria completa: así no se confirma una X a media Q ni se cuenta dos veces la misma
-    seña.
+    END_STILL_MS por debajo de STILL_SPEED (o alcanza MAX_MOVEMENT_DURATION_MS). Entonces se
+    compara la trayectoria completa: así no se confirma una X a media Q ni se cuenta dos veces la
+    misma seña.
 
     Las señas de `two_handed` (gracias, por favor) solo se aceptan si la otra mano participó
     en el movimiento (`other_hand_raised`); si no, quedan en `rejected`. Con
@@ -245,7 +246,7 @@ class DynamicDetector:
         if self._moving_since is None:
             return None
         ended = self._still_since is not None and t_ms - self._still_since >= END_STILL_MS
-        too_long = t_ms - self._moving_since >= WINDOW_SECONDS * 1000
+        too_long = t_ms - self._moving_since >= MAX_MOVEMENT_DURATION_MS
         if not (ended or too_long):
             return None
         started, self._moving_since = self._moving_since, None

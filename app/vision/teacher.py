@@ -247,7 +247,29 @@ def _parse_video_name(path: Path) -> tuple[str, str] | None:
     return match.group(1).upper(), match.group(2).upper()
 
 
-def import_videos(source: Path, stride: int, overwrite: bool) -> None:
+def _video_import_identity(
+    video_path: Path, label: str | None, participant: str
+) -> tuple[str, str] | None:
+    """Devuelve la etiqueta y el nombre del CSV para un video de importación."""
+    if label:
+        normalized_label = unicodedata.normalize("NFC", label)
+        stem = unicodedata.normalize("NFC", video_path.stem).replace(" ", "_")
+        return normalized_label, f"{participant}_{normalized_label}_{stem}"
+    parsed = _parse_video_name(video_path)
+    if parsed is None:
+        return None
+    _, sign = parsed
+    stem = unicodedata.normalize("NFC", video_path.stem).replace(" ", "_")
+    return sign, stem
+
+
+def import_videos(
+    source: Path,
+    stride: int,
+    overwrite: bool,
+    label: str | None = None,
+    participant: str = "p01",
+) -> None:
     videos = sorted(source.rglob("*.mp4"))
     if not videos:
         raise SystemExit(f"No se encontraron videos .mp4 en {source}")
@@ -255,14 +277,13 @@ def import_videos(source: Path, stride: int, overwrite: bool) -> None:
 
     stats = Counter()
     for number, video_path in enumerate(videos, start=1):
-        parsed = _parse_video_name(video_path)
-        if parsed is None:
+        identity = _video_import_identity(video_path, label, participant)
+        if identity is None:
             print(f"  [{number}/{len(videos)}] se omite (nombre no reconocido): {video_path.name}")
             stats["omitidos"] += 1
             continue
-        _, label = parsed
-        stem = unicodedata.normalize("NFC", video_path.stem).replace(" ", "_")
-        output_path = DATA_DIR / label / f"{stem}.csv"
+        sign, stem = identity
+        output_path = DATA_DIR / sign / f"{stem}.csv"
         if output_path.exists() and not overwrite:
             stats["existentes"] += 1
             continue
@@ -301,7 +322,7 @@ def import_videos(source: Path, stride: int, overwrite: bool) -> None:
             writer.writerows(rows)
         stats["importados"] += 1
         stats["cuadros"] += len(rows)
-        print(f"  [{number}/{len(videos)}] {label}: {len(rows)} cuadros <- {video_path.name}")
+        print(f"  [{number}/{len(videos)}] {sign}: {len(rows)} cuadros <- {video_path.name}")
 
     print("Resumen: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
 
@@ -1539,6 +1560,10 @@ def main() -> None:
         "--source", type=Path, default=RAW_DIR / "MSL-dynamic-signs", help="carpeta con .mp4"
     )
     videos_parser.add_argument("--stride", type=int, default=1, help="procesar 1 de cada N cuadros")
+    videos_parser.add_argument("--label", help="etiqueta si los nombres no usan formato MSL")
+    videos_parser.add_argument(
+        "--participant", default="p01", help="persona para videos con etiqueta manual"
+    )
     videos_parser.add_argument("--overwrite", action="store_true")
 
     glosses_parser = subparsers.add_parser(
@@ -1561,7 +1586,9 @@ def main() -> None:
     if args.command == "collect":
         collect(args.label, args.participant, args.camera, not args.no_body)
     elif args.command == "import-videos":
-        import_videos(args.source, max(args.stride, 1), args.overwrite)
+        import_videos(
+            args.source, max(args.stride, 1), args.overwrite, args.label, args.participant
+        )
     elif args.command == "import-glosses":
         import_glosses(args.source, args.overwrite)
     elif args.command == "import-frames":

@@ -10,7 +10,7 @@ from app.vision.recognizer import (
     SignStabilizer,
     alphabet_key,
 )
-from app.vision.sequence import DynamicDetector
+from app.vision.sequence import MAX_MOVEMENT_DURATION_MS, DynamicDetector
 
 HAND = (np.zeros((21, 3)), False)
 
@@ -81,6 +81,26 @@ def test_hand_side_needs_a_confident_handedness() -> None:
 
 def test_signs_lists_model_classes_without_other() -> None:
     assert Recognizer(FakeClassifier("Ñ")).signs == ["Ñ"]
+
+
+def test_dynamic_sign_is_classified_after_two_and_a_half_seconds_if_still_moving() -> None:
+    detector = DynamicDetector(FakeClassifier("hola"), OTHER)
+    started_at = None
+    confirmed_at = None
+
+    for t_ms in range(0, 3001, 50):
+        points = hand(0.4 + t_ms / 1000 * 0.5)
+        result = detector.push(t_ms, points)
+        if detector.moving and started_at is None:
+            started_at = t_ms
+        if result is not None:
+            confirmed_at = t_ms
+            break
+
+    assert started_at is not None
+    assert confirmed_at is not None
+    assert confirmed_at - started_at >= MAX_MOVEMENT_DURATION_MS
+    assert confirmed_at - started_at < MAX_MOVEMENT_DURATION_MS + 50
 
 
 def test_load_without_models_explains_how_to_train(tmp_path) -> None:
