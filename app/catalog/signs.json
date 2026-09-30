@@ -1,0 +1,203 @@
+{
+  "_nota": "Catálogo de señas (RF-09). Para agregar una seña: añadirla aquí, poner sus datos en data/vision/<data_label>/ y reentrenar con `vision train`; no hace falta tocar el clasificador (RNF-11). Las descripciones son borradores hasta que las valide una persona intérprete de LSM (RNF-05).",
+  "catalog_version": "0.1.0",
+  "levels": [
+    {
+      "level": 1,
+      "name": "Letras estáticas",
+      "required_components": ["configuration", "orientation"]
+    },
+    {
+      "level": 2,
+      "name": "Letras con movimiento",
+      "required_components": ["configuration", "orientation", "movement"]
+    },
+    {
+      "level": 3,
+      "name": "Palabras",
+      "required_components": ["configuration", "orientation", "localization", "movement"]
+    }
+  ],
+  "_nota_sign_types": "El tiempo que hay que sostener una estática (RF-06) no va aquí: se configura con VISION_HOLD_MS en .env y la API lo reporta como hold_time_ms.",
+  "sign_types": {
+    "static": { "max_duration_ms": null },
+    "dynamic": { "max_duration_ms": 3000 }
+  },
+  "signs": [
+    {
+      "id": "a",
+      "display_name": "A",
+      "level": 1,
+      "type": "static",
+      "data_label": "A",
+      "reference_asset": "a.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Puño cerrado con el pulgar extendido junto al índice.",
+        "orientation": "Palma hacia el frente."
+      }
+    },
+    {
+      "id": "b",
+      "display_name": "B",
+      "level": 1,
+      "type": "static",
+      "data_label": "B",
+      "reference_asset": "b.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Cuatro dedos extendidos y juntos, pulgar doblado sobre la palma.",
+        "orientation": "Palma hacia el frente, dedos hacia arriba."
+      }
+    },
+    {
+      "id": "c",
+      "display_name": "C",
+      "level": 1,
+      "type": "static",
+      "data_label": "C",
+      "reference_asset": "c.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Dedos juntos y curvos con el pulgar enfrente, formando una C.",
+        "orientation": "Palma hacia un lado."
+      }
+    },
+    {
+      "id": "l",
+      "display_name": "L",
+      "level": 1,
+      "type": "static",
+      "data_label": "L",
+      "reference_asset": "l.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Índice hacia arriba y pulgar hacia el lado formando una L; demás dedos cerrados.",
+        "orientation": "Palma hacia el frente."
+      }
+    },
+    {
+      "id": "y",
+      "display_name": "Y",
+      "level": 1,
+      "type": "static",
+      "data_label": "Y",
+      "reference_asset": "y.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Pulgar y meñique extendidos; demás dedos cerrados.",
+        "orientation": "Palma hacia el frente."
+      }
+    },
+    {
+      "id": "j",
+      "display_name": "J",
+      "level": 2,
+      "type": "dynamic",
+      "data_label": "J",
+      "reference_asset": "j.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Meñique extendido; demás dedos cerrados.",
+        "movement": "Trazar una J con la punta del meñique."
+      }
+    },
+    {
+      "id": "enie",
+      "display_name": "Ñ",
+      "level": 2,
+      "type": "dynamic",
+      "data_label": "Ñ",
+      "reference_asset": "enie.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "q",
+      "display_name": "Q",
+      "level": 2,
+      "type": "dynamic",
+      "data_label": "Q",
+      "reference_asset": "q.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "x",
+      "display_name": "X",
+      "level": 2,
+      "type": "dynamic",
+      "data_label": "X",
+      "reference_asset": "x.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "z",
+      "display_name": "Z",
+      "level": 2,
+      "type": "dynamic",
+      "data_label": "Z",
+      "reference_asset": "z.mp4",
+      "validated": false,
+      "components": {
+        "configuration": "Índice extendido; demás dedos cerrados.",
+        "movement": "Trazar una Z con la punta del índice."
+      }
+    },
+    {
+      "id": "hola",
+      "display_name": "Hola",
+      "level": 3,
+      "type": "dynamic",
+      "data_label": "hola",
+      "reference_asset": "hola.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "gracias",
+      "display_name": "Gracias",
+      "level": 3,
+      "type": "dynamic",
+      "data_label": "gracias",
+      "reference_asset": "gracias.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "por_favor",
+      "display_name": "Por favor",
+      "level": 3,
+      "type": "dynamic",
+      "data_label": "por_favor",
+      "reference_asset": "por_favor.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "ayuda",
+      "display_name": "Ayuda",
+      "level": 3,
+      "type": "dynamic",
+      "data_label": "ayuda",
+      "reference_asset": "ayuda.mp4",
+      "validated": false,
+      "components": {}
+    },
+    {
+      "id": "mama",
+      "display_name": "Mamá",
+      "level": 3,
+      "type": "dynamic",
+      "data_label": "mama",
+      "reference_asset": "mama.mp4",
+      "validated": false,
+      "components": {}
+    }
+  ],
+  "training": {
+    "_nota": "Las carpetas de data/vision que no son señas del catálogo se aprenden como `otra`. `dynamic_negatives`: señas con movimiento fuera del catálogo (ej. K) que se usan como negativos del detector de movimiento.",
+    "dynamic_negatives": ["K"]
+  }
+}

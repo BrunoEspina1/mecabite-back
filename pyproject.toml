@@ -16,15 +16,23 @@ dependencies = [
     "scikit-learn>=1.7.2",
 ]
 
+[project.scripts]
+vision = "app.vision.teacher:main"
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = ""
+
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
-
-[tool.uv]
-package = false
 
 [tool.ruff]
 line-length = 100

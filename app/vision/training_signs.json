@@ -1,0 +1,5 @@
+{
+  "_nota": "Señas extra que aprenden los modelos de visión además del catálogo de la app (app/catalog/signs.json, RF-09). Solo se usan para entrenar y en `vision demo/live/practice`; la API no las anuncia. Las carpetas de data/vision que no estén aquí ni en el catálogo se aprenden como `otra`.",
+  "estaticas": ["D", "E", "F", "G", "H", "I", "M", "N", "O", "P", "R", "S", "T", "U", "V", "W"],
+  "dinamicas": ["K"]
+}

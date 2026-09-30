@@ -2,223 +2,196 @@
 
 ## Estado Del Documento
 
-- **Versión:** 0.1.0
-- **Propósito:** integración del hackathon y pruebas de inferencia remota.
-- **Estado del backend:** actualmente solo está implementado `GET /api/v1/health`.
-- **Alcance:** contrato propuesto para que móvil y backend puedan trabajar en paralelo.
+- **Versión del protocolo:** 0.2.0 (MVP).
+- **Alcance:** qué envía la app, qué responde el backend y cómo conectarse en red local.
+- **Idea central:** la app corre MediaPipe y envía landmarks; el backend hace todo el
+  reconocimiento y devuelve la retroalimentación.
 
-Este contrato no sustituye la inferencia local de producción. El modo remoto sirve
-para validar el flujo mientras se entrena y exporta el modelo a iOS.
+| Endpoint | Estado |
+| --- | --- |
+| `GET /health` | Implementado |
+| `GET /catalog/signs` | Implementado |
+| `POST /sessions` y WebSocket `/ws/sessions/{id}` | Pendiente (siguiente entrega) |
+| `POST /simulations/predict` | Pendiente |
 
-## Decisiones De Arquitectura
+Lo pendiente ya tiene su formato definido aquí; la app puede construirse contra este
+contrato con datos simulados mientras se implementa.
 
-### 1. Dos modos de ejecución
+### Cambios Respecto A 0.1.0
 
-La aplicación debe contemplar dos modos:
+- En el MVP **el backend procesa todo**. Se elimina el modo `local` / `remote_debug`; la
+  versión final sin internet (RNF-07) queda fuera del MVP.
+- `vision.hand_landmarks` se reemplaza por `vision.hands` (lista) y se agregan
+  `image_width`, `image_height` y `mirrored`. Sin estos datos el backend no puede comparar
+  los landmarks del teléfono con los de entrenamiento.
+- `handedness` pasa a ser la etiqueta **cruda** de MediaPipe con su score.
+- Se quita `detection_confidence`: MediaPipe Hand Landmarker no la entrega por mano.
+- `glove` va en `null`: el guante aún no está terminado.
+- Frecuencia: se envía cada cuadro que procese MediaPipe (15 Hz mínimo), no 15 Hz fijos.
+- `POST /sessions`: se agregan `mode` (`practice` / `demo`) y `record`; se quitan `level` y
+  `model_version` (el backend los obtiene del catálogo y del modelo cargado).
+- `GET /catalog/signs` agrega `levels`, `components` (descripción de cada componente) y
+  `validated`.
+- `feedback` agrega `progress` y se define la lista de `feedback_code`.
 
-| Modo | Uso | Dónde se ejecuta la inferencia |
-| --- | --- | --- |
-| `remote_debug` | Desarrollo, hackathon y pruebas con el backend local | `mecabite-back` |
-| `local` | Uso final, sin internet y con privacidad | Aplicación iOS |
-
-El modo `remote_debug` puede conectarse a un backend ejecutándose en una laptop
-dentro de la misma red local. El modo `local` no depende del backend.
-
-### 2. MediaPipe se ejecuta en el dispositivo
-
-La aplicación debe capturar el video y ejecutar MediaPipe localmente. Al backend
-no se deben enviar frames ni video.
-
-En el modo remoto se envían únicamente:
-
-- Landmarks de mano.
-- Landmarks de cuerpo cuando el nivel los requiera.
-- Confianza de detección.
-- Mano detectada.
-- Datos del guante.
-
-Esto reduce latencia, ancho de banda y exposición de información privada.
-
-### 3. WebSocket para tiempo real
-
-No se debe hacer una petición HTTP por cada lectura del guante o frame de cámara.
-El canal de observaciones será WebSocket.
-
-REST se usará para:
-
-- Salud del servicio.
-- Catálogo de señas.
-- Creación de sesiones.
-- Pruebas con arrays simulados.
-
-### 4. El backend no almacena observaciones por defecto
-
-El backend mantendrá las observaciones en memoria durante la sesión y devolverá
-la retroalimentación. No guardará video ni landmarks salvo que se active
-explícitamente un modo de recolección para entrenamiento.
-
-### 5. Los identificadores son estables y ASCII
-
-Los nombres que se muestran al usuario pueden tener acentos, pero los IDs del
-protocolo no los tendrán:
-
-| ID | Nombre mostrado | Nivel |
-| --- | --- | --- |
-| `a` | A | 1 |
-| `b` | B | 1 |
-| `c` | C | 1 |
-| `l` | L | 1 |
-| `y` | Y | 1 |
-| `j` | J | 2 |
-| `enie` | Ñ | 2 |
-| `q` | Q | 2 |
-| `x` | X | 2 |
-| `z` | Z | 2 |
-| `hola` | Hola | 3 |
-| `gracias` | Gracias | 3 |
-| `por_favor` | Por favor | 3 |
-| `ayuda` | Ayuda | 3 |
-| `mama` | Mamá | 3 |
-
-`reposo` y `transicion` son clases internas para el reconocimiento y no deben
-mostrarse como señas del catálogo.
-
-## Requisitos Para Móvil
-
-### Datos Del Guante
-
-El contrato inicial conserva el formato de `Manitas`: 11 valores por lectura,
-con una frecuencia objetivo aproximada de 15 Hz.
-
-Orden canónico si se usa un array:
+## Arquitectura Del MVP
 
 ```text
-[
-  izq,
-  der,
-  arr,
-  abj,
-  giro_izq,
-  giro_der,
-  pulgar,
-  indice,
-  medio,
-  anular,
-  menique
-]
+iPhone                                              Laptop (misma red Wi-Fi)
+┌──────────────────────────────┐   WebSocket JSON   ┌──────────────────────────────┐
+│ Cámara frontal               │ ─ observaciones ─▶ │ mecabite-back                │
+│ MediaPipe Hand Landmarker    │                    │ normaliza landmarks          │
+│ (Pose Landmarker en nivel 3) │ ◀── feedback ───── │ evalúa componentes de la seña│
+│ UI de práctica / demo        │                    │ aprueba con 3 seguidas       │
+└──────────────────────────────┘                    └──────────────────────────────┘
 ```
 
-La forma recomendada para WebSocket es un objeto con nombres, para evitar errores
-si algún día cambia el orden:
+- **El video nunca sale del teléfono** (RNF-10). Solo viajan landmarks y metadatos.
+- El backend guarda las observaciones **solo en memoria** durante la sesión. Únicamente
+  guarda landmarks (nunca video) si la sesión se crea con `record: true`.
+- REST para salud, catálogo, sesiones y simulación; WebSocket para el flujo en tiempo real.
+  No se hace una petición HTTP por cuadro.
+
+## Cómo Conectarse
+
+### En la laptop (backend)
+
+1. Arrancar el servidor escuchando en todas las interfaces. `fastapi dev` por defecto solo
+   acepta conexiones de la propia laptop (`127.0.0.1`) y el teléfono no llegaría:
+
+   ```bash
+   uv run fastapi dev app/main.py --host 0.0.0.0
+   ```
+
+2. Obtener la IP de la laptop en el Wi-Fi: `ipconfig getifaddr en0`.
+3. Si macOS pregunta si Python puede aceptar conexiones entrantes, permitirlo.
+4. Desde Safari en el iPhone abrir `http://<ip>:8000/api/v1/health`. Si responde
+   `{"status": "ok", ...}`, la red está bien y cualquier falla posterior es de la app.
+
+### Red
+
+- Laptop e iPhone en la **misma red Wi-Fi**. Las redes de escuela, oficina o de invitados
+  suelen aislar a los dispositivos entre sí; si el paso 4 falla, usar el hotspot del
+  teléfono o un router propio.
+- La IP de la laptop cambia al cambiar de red: la URL base debe ser **configurable** en la
+  app (pantalla de ajustes o configuración de build), nunca fija en el código.
+- En el simulador de iOS funciona `http://127.0.0.1:8000`; en un iPhone físico hay que usar
+  la IP de la laptop, no `localhost`.
+
+URLs:
+
+```text
+REST:      http://<ip-de-la-laptop>:8000/api/v1
+WebSocket: ws://<ip-de-la-laptop>:8000/api/v1/ws/sessions/{session_id}
+```
+
+### En la app iOS
+
+- **Permiso de red local:** agregar `NSLocalNetworkUsageDescription` al `Info.plist`. iOS
+  pregunta al usuario la primera vez que la app se conecta a un equipo de la red local; si
+  lo niega, las conexiones fallan sin un error claro (se reactiva en Ajustes > Privacidad >
+  Red local).
+- **App Transport Security:** el MVP usa `http://` y `ws://` sin TLS. Si iOS bloquea la
+  conexión (error `-1022`), agregar `NSAppTransportSecurity > NSAllowsLocalNetworking = YES`.
+  Cualquier excepción adicional debe quedar solo en builds de desarrollo.
+- `URLSessionWebSocketTask` sirve para el WebSocket.
+- Cuando la app pasa a segundo plano iOS suspende el socket: al volver, reconectar a la
+  **misma** sesión en lugar de crear otra.
+
+## Datos Que Envía La App
+
+### Mano (MediaPipe Hand Landmarker)
+
+- Configurar `num_hands = 1` en el MVP. `hands` es una lista para poder pasar a dos manos
+  sin romper el protocolo si alguna palabra del nivel 3 lo requiere.
+- `landmarks`: los 21 puntos **normalizados** (`x`, `y` de 0 a 1 respecto al ancho y alto
+  de la imagen; `z` tal como lo entrega MediaPipe), en el orden oficial. No enviar los
+  *world landmarks* ni escalar las coordenadas: el backend corrige la proporción de la
+  imagen con `image_width` e `image_height`.
+- Coordenadas de la **imagen vertical**, tal como la ve el usuario (cabeza arriba).
+  `image_width` e `image_height` son de esa imagen ya orientada.
+- `mirrored`: `true` si la imagen que recibió MediaPipe estaba volteada horizontalmente
+  (vista tipo espejo o selfie). Ojo: en AVFoundation la vista previa de la cámara frontal se
+  ve en espejo, pero los cuadros de `AVCaptureVideoDataOutput` no lo están salvo que se
+  active `isVideoMirrored` en la conexión. Hay que reportar lo que recibió MediaPipe, no lo
+  que muestra la vista previa.
+- `handedness`: la etiqueta y el score **sin corregir** que da MediaPipe (`"Left"` o
+  `"Right"`). El backend la interpreta según `mirrored`.
+- Redondear a 5 decimales para reducir el tamaño del mensaje.
+
+Pruebas rápidas para validar la orientación antes de integrar:
+
+1. Mano abierta con los dedos hacia el techo: `y` de la punta del dedo medio (punto 12) debe
+   ser **menor** que `y` de la muñeca (punto 0).
+2. Mano derecha levantada a la altura del hombro derecho: con `mirrored: true` la muñeca debe
+   quedar en `x > 0.5`; con `mirrored: false`, en `x < 0.5`.
+
+### Cuerpo (MediaPipe Pose Landmarker) — reservado para el nivel 3
+
+- `pose_landmarks`: 33 puntos `[x, y, z, visibility]` normalizados, con las mismas reglas de
+  orientación que la mano.
+- Enviar `null` en los niveles 1 y 2. El backend todavía no lo procesa; el formato puede
+  ajustarse cuando se definan las zonas de localización con la persona intérprete.
+
+### Guante — reservado
+
+El guante se está terminando de construir. **En el MVP `glove` siempre va en `null`** y los
+componentes de configuración y orientación se evalúan con la cámara.
+
+Formato preliminar para cuando esté listo (11 valores con nombre; cambiará cuando
+electrónica confirme unidades, rangos, frecuencia y tipo de conexión):
 
 ```json
 {
-  "izq": 0.2,
-  "der": 0.4,
-  "arr": 0.8,
-  "abj": 0.1,
-  "giro_izq": 0.3,
-  "giro_der": 0.2,
-  "pulgar": 1.0,
-  "indice": 3.0,
-  "medio": 3.0,
-  "anular": 3.0,
-  "menique": 3.0
+  "connected": true,
+  "sample_rate_hz": 15.0,
+  "values": {
+    "izq": 0.2, "der": 0.4, "arr": 0.8, "abj": 0.1, "giro_izq": 0.3, "giro_der": 0.2,
+    "pulgar": 1.0, "indice": 3.0, "medio": 3.0, "anular": 3.0, "menique": 3.0
+  }
 }
 ```
 
-La electrónica debe confirmar antes de integrar:
+### Tiempo, orden y frecuencia
 
-- Unidades de orientación.
-- Rango real de cada sensor.
-- Frecuencia real.
-- Significado de positivo y negativo.
-- Comportamiento durante desconexiones.
-- Si los sensores flex usan la escala 1 a 3.
-
-### MediaPipe
-
-Para cada mano, móvil debe enviar exactamente 21 landmarks en el orden oficial
-de MediaPipe Hand Landmarker. Cada landmark tiene `[x, y, z]`.
-
-- `x` y `y` son coordenadas normalizadas.
-- `z` conserva la convención entregada por MediaPipe.
-- La lista debe tener exactamente 21 elementos.
-- Si no se detecta una mano, `hand_landmarks` debe ser `null`.
-- `handedness` puede ser `left`, `right` o `unknown`.
-
-Para el cuerpo se reservará una lista de landmarks compatible con MediaPipe Pose.
-Se enviará como `null` hasta que el nivel de la seña requiera localización.
-
-### Tiempo Y Orden
-
-Cada observación debe incluir:
-
-- `sequence`: entero creciente desde cero por sesión.
-- `timestamp_ms`: tiempo monotónico relativo al inicio de la sesión.
-- `source`: `mobile`.
-
-No se debe usar la hora calendario del teléfono para sincronizar sensores y cámara.
-La combinación debe usar el reloj monotónico de la sesión.
-
-Si se pierde una lectura, móvil debe conservar el número de secuencia y reportar
-el salto. No debe inventar valores sin indicarlo.
-
-### Calibración
-
-La calibración se realiza en móvil y produce un `calibration_id`. El backend no
-debe asumir que todos los usuarios tienen los mismos rangos.
-
-El paquete de sesión debe incluir:
-
-- `calibration_id`.
-- `handedness` configurada por el usuario, si existe.
-- Versión del algoritmo de calibración.
-- Fecha local de calibración.
-
-Los valores calibrados deben poder usarse sin conexión.
+- `sequence`: entero que empieza en 0 por sesión y aumenta en 1 por observación.
+- `timestamp_ms`: milisegundos desde el inicio de la sesión, con reloj **monotónico**. Usar el
+  tiempo de captura del cuadro (presentation timestamp del `CMSampleBuffer`), no la hora en
+  que se envía: el backend mide trayectorias y velocidades con este valor. No usar la hora
+  del calendario.
+- Enviar **cada cuadro que procese MediaPipe**: lo ideal es 20–30 Hz y el mínimo 15 Hz. El
+  backend trabaja por tiempo, así que no importa si la frecuencia varía.
+- Enviar también los cuadros **sin mano** (`hands: []`); así el backend sabe que la mano
+  salió de cuadro.
+- Si se pierde un cuadro no se reenvía ni se inventa: `sequence` sigue contando.
 
 ## REST API
 
-### Base URL
+Base: `http://<ip-de-la-laptop>:8000/api/v1`
 
-En desarrollo:
-
-```text
-http://<ip-de-la-laptop>:8000/api/v1
-```
-
-En el simulador iOS, normalmente se puede usar `127.0.0.1`. En un teléfono
-físico se debe usar la IP local de la laptop, no `localhost`.
-
-WebSocket:
-
-```text
-ws://<ip-de-la-laptop>:8000/api/v1/ws/sessions/{session_id}
-```
-
-### `GET /health`
-
-Endpoint existente para comprobar conectividad.
+### `GET /health` — implementado
 
 Respuesta `200`:
 
 ```json
-{
-  "status": "ok",
-  "environment": "local"
-}
+{ "status": "ok", "environment": "local" }
 ```
 
-### `GET /catalog/signs`
+### `GET /catalog/signs` — implementado
 
-Devuelve el catálogo que la app debe mostrar.
+Catálogo de las 15 señas y los 3 niveles. La app lo usa para armar lecciones y mostrar
+cada seña con su descripción (RF-11).
 
-Respuesta `200`:
+Respuesta `200` (recortada a dos señas):
 
 ```json
 {
   "catalog_version": "0.1.0",
+  "levels": [
+    { "level": 1, "name": "Letras estáticas", "required_components": ["configuration", "orientation"] },
+    { "level": 2, "name": "Letras con movimiento", "required_components": ["configuration", "orientation", "movement"] },
+    { "level": 3, "name": "Palabras", "required_components": ["configuration", "orientation", "localization", "movement"] }
+  ],
   "signs": [
     {
       "id": "a",
@@ -228,7 +201,14 @@ Respuesta `200`:
       "required_components": ["configuration", "orientation"],
       "hold_time_ms": 1000,
       "max_duration_ms": null,
-      "reference_asset": "a.mp4"
+      "reference_asset": "a.mp4",
+      "components": {
+        "configuration": "Puño cerrado con el pulgar extendido junto al índice.",
+        "orientation": "Palma hacia el frente.",
+        "localization": null,
+        "movement": null
+      },
+      "validated": false
     },
     {
       "id": "j",
@@ -238,173 +218,177 @@ Respuesta `200`:
       "required_components": ["configuration", "orientation", "movement"],
       "hold_time_ms": null,
       "max_duration_ms": 3000,
-      "reference_asset": "j.mp4"
+      "reference_asset": "j.mp4",
+      "components": {
+        "configuration": "Meñique extendido; demás dedos cerrados.",
+        "orientation": null,
+        "localization": null,
+        "movement": "Trazar una J con la punta del meñique."
+      },
+      "validated": false
     }
   ]
 }
 ```
 
-`reference_asset` debe ser una referencia a un recurso local o empaquetado en la
-app. No se debe asumir que estará disponible desde internet.
+| Campo | Significado |
+| --- | --- |
+| `id` | Identificador estable en ASCII; es el que se usa en todo el protocolo |
+| `display_name` | Nombre para mostrar (puede llevar acentos) |
+| `type` | `static`: se valida sosteniéndola `hold_time_ms` (RF-06). `dynamic`: se valida la trayectoria completa en máximo `max_duration_ms` (RF-07) |
+| `hold_time_ms` | Lo configura el servidor y puede cambiar: la app debe leerlo del catálogo (para la barra de `progress`), no asumir 1000 |
+| `required_components` | Componentes que se evalúan en ese nivel (RF-08) |
+| `reference_asset` | Nombre del video de referencia **empaquetado en la app**; no se descarga del backend |
+| `components` | Descripción de cada componente; `null` si no aplica o aún no está redactada |
+| `validated` | `false` mientras una persona intérprete de LSM no haya revisado la seña (RNF-05) |
 
-### `POST /sessions`
+Las descripciones actuales son **borradores** y varias están en `null`; los videos de
+referencia todavía no existen. La app debe tolerar ambos casos.
 
-Crea una sesión temporal para el modo `remote_debug`.
+IDs del catálogo:
+
+| ID | Nombre | Nivel | Tipo |
+| --- | --- | --- | --- |
+| `a`, `b`, `c`, `l`, `y` | A, B, C, L, Y | 1 | static |
+| `j`, `enie`, `q`, `x`, `z` | J, Ñ, Q, X, Z | 2 | dynamic |
+| `hola`, `gracias`, `por_favor`, `ayuda`, `mama` | Hola, Gracias, Por favor, Ayuda, Mamá | 3 | dynamic |
+
+`otra`, `reposo` y `transicion` son clases internas del reconocimiento y nunca aparecen en
+el catálogo ni en `predicted_sign`.
+
+### `POST /sessions` — pendiente
+
+Crea una sesión temporal. Una sesión evalúa una sola seña; para pasar a la siguiente se
+cierra y se crea otra.
 
 Solicitud:
 
 ```json
 {
-  "mode": "remote_debug",
+  "mode": "practice",
   "target_sign": "a",
-  "level": 1,
   "participant_id": "p01",
-  "device_id": "iphone-local",
-  "calibration_id": "cal-001",
-  "model_version": "sensor-0.1.0",
-  "client_version": "0.1.0"
+  "device_id": "iphone-dev-1",
+  "client_version": "0.2.0",
+  "calibration_id": null,
+  "record": false
 }
 ```
+
+| Campo | Significado |
+| --- | --- |
+| `mode` | `practice`: evalúa `target_sign` y cuenta ejecuciones (RF-12). `demo`: reconoce cualquier seña del catálogo y la reporta (RF-14); `target_sign` va en `null` |
+| `target_sign` | `id` del catálogo |
+| `calibration_id` | `null` en el MVP; se usará con la calibración del guante |
+| `record` | `true` para guardar los landmarks de la sesión (nunca video) y usarlos para entrenar. Solo con consentimiento de la persona. Por defecto `false` |
 
 Respuesta `201`:
 
 ```json
 {
   "session_id": "sess_01JABC123",
-  "mode": "remote_debug",
+  "mode": "practice",
   "target_sign": "a",
   "level": 1,
   "status": "created",
   "websocket_path": "/api/v1/ws/sessions/sess_01JABC123",
-  "expires_in_seconds": 900
+  "expires_in_seconds": 900,
+  "protocol_version": "0.2.0",
+  "catalog_version": "0.1.0",
+  "model_version": "vision-0.1.0"
 }
 ```
 
 Reglas:
 
-- `target_sign` debe existir en el catálogo.
-- `level` debe coincidir con el nivel del catálogo.
-- La sesión expira después de 15 minutos sin actividad.
-- El backend no debe persistir la sesión después de cerrarla.
+- `target_sign` debe existir en el catálogo (`404 SIGN_NOT_FOUND`).
+- La sesión expira tras 15 minutos sin actividad.
+- El backend no conserva la sesión después de cerrarla.
 
-### `POST /simulations/predict`
+### `POST /simulations/predict` — pendiente
 
-Endpoint exclusivo para RF-15 y pruebas sin dispositivo. Recibe un array de
-lecturas del guante. No simula la cámara si no se envían landmarks.
-
-Solicitud:
+Para RF-15: probar el flujo del guante con un array de lecturas simuladas mientras el
+dispositivo no existe. Lo usa sobre todo el equipo de backend; **la app no necesita
+implementarlo**.
 
 ```json
 {
   "target_sign": "a",
-  "level": 1,
   "samples": [
-    {
-      "sequence": 0,
-      "timestamp_ms": 0,
-      "values": [0.2, 0.4, 0.8, 0.1, 0.3, 0.2, 1, 3, 3, 3, 3]
-    },
-    {
-      "sequence": 1,
-      "timestamp_ms": 67,
-      "values": [0.2, 0.4, 0.8, 0.1, 0.3, 0.2, 1, 3, 3, 3, 3]
-    }
+    { "sequence": 0, "timestamp_ms": 0, "values": [0.2, 0.4, 0.8, 0.1, 0.3, 0.2, 1, 3, 3, 3, 3] },
+    { "sequence": 1, "timestamp_ms": 67, "values": [0.2, 0.4, 0.8, 0.1, 0.3, 0.2, 1, 3, 3, 3, 3] }
   ]
 }
 ```
 
-Respuesta `200`:
-
-```json
-{
-  "target_sign": "a",
-  "predicted_sign": "a",
-  "confidence": 0.94,
-  "correct": true,
-  "approved": false,
-  "consecutive_correct": 1,
-  "components": {
-    "configuration": "correct",
-    "orientation": "correct",
-    "localization": "not_required",
-    "movement": "not_required"
-  },
-  "feedback_code": "hold_position",
-  "message": "Mantén la posición"
-}
-```
+El orden de `values` es `izq, der, arr, abj, giro_izq, giro_der, pulgar, indice, medio,
+anular, menique`. Responde con el mismo formato que el mensaje `feedback`.
 
 ## WebSocket API
 
-### Flujo De Conexión
+`ws://<ip-de-la-laptop>:8000/api/v1/ws/sessions/{session_id}`
 
-1. Móvil crea una sesión con `POST /sessions`.
-2. Móvil abre el WebSocket de la sesión.
-3. Backend responde con `ready`.
-4. Móvil envía observaciones.
-5. Backend responde con un mensaje `feedback` por observación procesada.
-6. Móvil envía `end_session` al terminar.
-7. Backend responde con `session_summary` y cierra el canal.
+### Flujo
 
-### Mensaje `ready`
+1. La app crea la sesión con `POST /sessions`.
+2. Abre el WebSocket de la sesión. Si la sesión no existe o expiró, el backend cierra con el
+   código `4404`.
+3. El backend envía `ready`.
+4. La app envía un `observation` por cuadro.
+5. El backend responde con `feedback`.
+6. La app envía `end_session` al terminar.
+7. El backend responde con `session_summary` y cierra el canal.
+
+### `ready` (backend → app)
 
 ```json
 {
   "type": "ready",
   "session_id": "sess_01JABC123",
-  "protocol_version": "0.1.0",
-  "model_version": "sensor-0.1.0",
-  "expected_sample_rate_hz": 15,
-  "required_inputs": ["glove"],
+  "protocol_version": "0.2.0",
+  "model_version": "vision-0.1.0",
+  "min_sample_rate_hz": 15,
+  "required_inputs": ["hand"],
   "server_timestamp_ms": 0
 }
 ```
 
-### Mensaje `observation`
+`required_inputs` incluye `"pose"` en el nivel 3 y, cuando exista, `"glove"`.
 
-Este es el mensaje principal de móvil a backend.
+### `observation` (app → backend)
 
 ```json
 {
   "type": "observation",
   "sequence": 42,
   "timestamp_ms": 2800,
-  "glove": {
-    "connected": true,
-    "sample_rate_hz": 15.0,
-    "values": {
-      "izq": 0.2,
-      "der": 0.4,
-      "arr": 0.8,
-      "abj": 0.1,
-      "giro_izq": 0.3,
-      "giro_der": 0.2,
-      "pulgar": 1.0,
-      "indice": 3.0,
-      "medio": 3.0,
-      "anular": 3.0,
-      "menique": 3.0
-    }
-  },
   "vision": {
-    "hand_landmarks": [[0.5, 0.5, 0.0]],
-    "pose_landmarks": null,
-    "handedness": "right",
-    "detection_confidence": 0.95
-  }
+    "image_width": 720,
+    "image_height": 1280,
+    "mirrored": true,
+    "hands": [
+      {
+        "landmarks": [[0.52341, 0.71022, 0.0], [0.55012, 0.66431, -0.01234]],
+        "handedness": { "label": "Right", "score": 0.97 }
+      }
+    ],
+    "pose_landmarks": null
+  },
+  "glove": null
 }
 ```
 
-En el ejemplo se muestra un solo landmark para reducir espacio, pero una
-observación real debe enviar exactamente 21 landmarks de mano.
+El ejemplo muestra dos landmarks para ahorrar espacio; una observación real lleva
+exactamente 21 por mano.
 
-Campos opcionales:
+| Campo | Regla |
+| --- | --- |
+| `vision.hands` | `[]` si no se detecta mano; máximo 1 elemento en el MVP |
+| `vision.hands[].landmarks` | Exactamente 21 elementos `[x, y, z]` |
+| `vision.pose_landmarks` | `null` en niveles 1 y 2 |
+| `glove` | `null` en el MVP |
 
-- `glove` puede ser `null` durante una prueba de visión.
-- `vision` puede ser `null` para señas que solo requieran sensores.
-- `pose_landmarks` puede ser `null` en niveles 1 y 2.
-
-### Mensaje `feedback`
+### `feedback` (backend → app)
 
 ```json
 {
@@ -415,6 +399,7 @@ Campos opcionales:
   "target_sign": "a",
   "predicted_sign": "a",
   "confidence": 0.94,
+  "progress": 0.6,
   "correct": true,
   "approved": false,
   "consecutive_correct": 2,
@@ -430,36 +415,52 @@ Campos opcionales:
 }
 ```
 
-Estados posibles:
+- `sequence` indica a qué observación responde. Si el backend se atrasa puede saltarse
+  observaciones viejas para no acumular retraso; con `sequence` la app correlaciona
+  respuestas y mide el tiempo de ida y vuelta (RNF-01: menos de 500 ms).
+- `progress` (0 a 1): avance para una barra en pantalla. En señas estáticas es el tiempo
+  sostenido respecto a `hold_time_ms`; en dinámicas va en `null`.
+- En modo `demo`: `target_sign`, `correct`, `approved` y `consecutive_correct` van en `null`
+  y `predicted_sign` trae la seña reconocida.
 
-- `waiting`: todavía no hay suficientes datos.
-- `candidate`: se está evaluando una posible seña.
-- `confirmed`: una ejecución fue reconocida correctamente.
-- `approved`: se cumplieron 3 ejecuciones consecutivas.
-- `rejected`: la ejecución falló.
-- `no_hand`: no se detectó la mano.
-- `disconnected`: falta una fuente requerida.
+Estados (`state`):
 
-Estados de componentes:
+| Estado | Significado |
+| --- | --- |
+| `waiting` | Todavía no hay datos suficientes |
+| `candidate` | Se está evaluando una posible seña |
+| `confirmed` | Una ejecución se reconoció correctamente |
+| `approved` | Se cumplieron 3 ejecuciones correctas consecutivas (RF-10) |
+| `rejected` | La ejecución falló; `components` dice qué falló (RF-13) |
+| `no_hand` | No se detecta la mano |
+| `disconnected` | Falta una fuente requerida (por ejemplo, el guante cuando exista) |
 
-- `correct`.
-- `incorrect`.
-- `not_required`.
-- `not_available`.
-- `insufficient_data`.
+Estados de cada componente: `correct`, `incorrect`, `not_required`, `not_available`
+(la fuente no está disponible; **no** es un error del usuario) e `insufficient_data`.
 
-### Mensaje `end_session`
+Códigos de retroalimentación (`feedback_code`). La app muestra `message` y usa el código
+para el apoyo visual (ícono, animación, color; RNF-09). No debe interpretar el texto de
+`message`.
 
-Solicitud de móvil:
+| `feedback_code` | Cuándo | Mensaje de ejemplo |
+| --- | --- | --- |
+| `show_hand` | No se ve la mano | Muestra tu mano a la cámara |
+| `hold_position` | Seña estática correcta, sosteniéndose | Mantén la posición |
+| `correct` | Ejecución confirmada | ¡Bien! 2 de 3 |
+| `approved` | Tercera ejecución consecutiva | ¡Seña aprobada! |
+| `wrong_configuration` | Falló la forma de la mano | Revisa la forma de tu mano |
+| `wrong_orientation` | Falló la orientación | Revisa hacia dónde apunta tu palma |
+| `wrong_movement` | Falló el movimiento (niveles 2 y 3) | Revisa el movimiento |
+| `wrong_localization` | Falló la ubicación (nivel 3) | Revisa dónde colocas la mano |
+| `too_slow` | Seña dinámica de más de `max_duration_ms` | Hazla en menos de 3 segundos |
+
+### `end_session` (app → backend)
 
 ```json
-{
-  "type": "end_session",
-  "reason": "user_finished"
-}
+{ "type": "end_session", "reason": "user_finished" }
 ```
 
-Respuesta del backend:
+Respuesta:
 
 ```json
 {
@@ -475,34 +476,30 @@ Respuesta del backend:
 
 ## Errores
 
-Respuesta REST estándar:
+Respuesta REST:
 
 ```json
 {
   "error": {
     "code": "INVALID_OBSERVATION",
-    "message": "glove.values debe contener los 11 sensores requeridos",
-    "details": {
-      "missing_fields": ["menique"]
-    }
+    "message": "Se esperaban 21 landmarks de mano",
+    "details": { "received": 20 }
   }
 }
 ```
-
-Códigos iniciales:
 
 | HTTP / código | Significado |
 | --- | --- |
 | `400 INVALID_REQUEST` | JSON inválido o campo faltante |
 | `404 SIGN_NOT_FOUND` | La seña no existe en el catálogo |
+| `404 SESSION_NOT_FOUND` | La sesión no existe o expiró |
 | `409 SESSION_NOT_READY` | La sesión no está lista para recibir datos |
-| `422 INVALID_OBSERVATION` | Lectura con forma, rango o timestamp inválido |
+| `422 INVALID_OBSERVATION` | Forma, rango o timestamp inválido |
 | `426 PROTOCOL_VERSION_UNSUPPORTED` | Versión de protocolo incompatible |
-| `429 RATE_LIMITED` | Se enviaron demasiados mensajes |
 | `500 INFERENCE_ERROR` | Error interno del modelo |
 
-En WebSocket, los errores deben enviarse como mensajes y no cerrar la conexión
-salvo que el error sea irrecuperable:
+En el WebSocket los errores llegan como mensaje y **no cierran la conexión**, salvo que sean
+irrecuperables:
 
 ```json
 {
@@ -513,43 +510,43 @@ salvo que el error sea irrecuperable:
 }
 ```
 
-## Necesidades De Implementación En Móvil
+## Checklist Para La App
 
-- Implementar un selector de modo `local` / `remote_debug`.
-- No enviar video al backend.
-- Ejecutar MediaPipe en la app y enviar landmarks.
-- Mantener un timestamp monotónico por sesión.
-- Mantener `sequence` aunque existan paquetes perdidos.
-- Enviar datos del guante con nombres de sensores o respetar estrictamente el orden canónico.
-- Guardar la calibración localmente.
-- Mostrar `message` y `feedback_code` como retroalimentación visual.
-- Tratar `not_available` como un estado de espera, no como un fallo del usuario.
-- Reconectar el WebSocket sin crear una segunda sesión automáticamente.
-- Desactivar el modo remoto si no existe una red local disponible.
-- Mantener los assets de referencia disponibles offline.
-- Versionar junto con la app el `protocol_version`, `catalog_version` y `model_version`.
+- [ ] URL base configurable; nada fijo en el código.
+- [ ] `NSLocalNetworkUsageDescription` en `Info.plist` y excepción de ATS para red local.
+- [ ] MediaPipe Hand Landmarker en modo video en vivo, `num_hands = 1`.
+- [ ] Enviar landmarks normalizados sin escalar, más `image_width`, `image_height`,
+      `mirrored` y `handedness` crudo. Pasar las dos pruebas de orientación.
+- [ ] Enviar cada cuadro, incluidos los que no tienen mano (`hands: []`).
+- [ ] `timestamp_ms` del momento de captura, monotónico y relativo al inicio de la sesión.
+- [ ] `glove: null` y `pose_landmarks: null` por ahora.
+- [ ] Mostrar `message`, usar `feedback_code` para el apoyo visual y `progress` para la barra.
+- [ ] Tratar `not_available` como espera, no como fallo.
+- [ ] Reconectar a la misma sesión al volver de segundo plano.
+- [ ] Videos de referencia empaquetados en la app (cuando existan).
+- [ ] Nunca enviar video ni imágenes.
 
-## Criterios De Integración
+## Criterios De Integración Del MVP
 
-La integración inicial se considera funcional cuando:
+1. El iPhone consulta `/health` en la misma red Wi-Fi.
+2. La app descarga `/catalog/signs` y muestra las 15 señas por nivel.
+3. Crea una sesión de práctica para `a`.
+4. Abre el WebSocket y recibe `ready`.
+5. Envía observaciones a 15 Hz o más, y pasa las pruebas de orientación.
+6. Recibe `feedback` sin enviar video.
+7. Una seña estática sostenida al menos 1000 ms se confirma.
+8. Tres ejecuciones correctas consecutivas producen `approved: true`.
+9. Un dato inválido produce un `error` descriptivo sin cerrar la sesión.
+10. El tiempo de ida y vuelta medido en el teléfono se mantiene por debajo de 500 ms.
 
-1. El teléfono puede consultar `/health` desde la misma red local.
-2. Puede crear una sesión para la seña `a`.
-3. Puede abrir el WebSocket y recibir `ready`.
-4. Puede enviar observaciones a aproximadamente 15 Hz.
-5. Recibe `feedback` sin enviar video.
-6. Una seña estática se evalúa durante al menos 1000 ms.
-7. Tres ejecuciones correctas consecutivas producen `approved: true`.
-8. Un dato faltante produce un error descriptivo sin cerrar necesariamente la sesión.
-9. El tiempo de procesamiento del backend se mantiene por debajo de 500 ms.
-10. El modo local puede funcionar sin que el backend esté disponible.
+## Pendientes
 
-## Pendientes Antes De Congelar El Contrato
-
-- Confirmar las unidades y rangos reales del guante.
-- Confirmar la frecuencia real de lectura.
-- Definir si los landmarks de pose serán necesarios para las palabras del Nivel 3.
-- Definir el formato final de exportación a Core ML.
-- Implementar autenticación si el backend sale de la red local.
-- Definir la política de almacenamiento explícito para sesiones de entrenamiento.
-- Confirmar las señas y patrones con una persona intérprete de LSM.
+- **Guante:** unidades, rangos, frecuencia y tipo de conexión; se integra cuando electrónica
+  lo termine.
+- **Intérprete de LSM:** validar descripciones y patrones, y confirmar si alguna palabra
+  usa dos manos.
+- **Videos de referencia** de las 15 señas.
+- **Nivel 3:** confirmar Pose Landmarker (33 puntos) y definir las zonas de localización.
+- **Política para `record: true`:** consentimiento, dónde se guarda y cómo se borra.
+- **Versión final (fuera del MVP):** reconocimiento sin internet (RNF-07), autenticación y
+  TLS si el backend sale de la red local.
