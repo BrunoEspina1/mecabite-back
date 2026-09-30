@@ -103,16 +103,29 @@ class Recognizer:
     ) -> Recognizer:
         if not static_path.exists():
             raise FileNotFoundError("No hay modelo. Ejecuta primero: vision train")
-        detector = second_detector = None
+        dynamic = None
         if dynamic_path.exists():
             dynamic = SignClassifier.load(dynamic_path)
+        else:
+            print("Aviso: sin modelo dinámico, solo se reconocen señas estáticas.")
+        return cls.from_classifiers(SignClassifier.load(static_path), dynamic)
+
+    @classmethod
+    def from_classifiers(
+        cls, static: SignClassifier, dynamic: SignClassifier | None = None
+    ) -> Recognizer:
+        """Un reconocedor con el estado en cero sobre modelos ya cargados.
+
+        Los clasificadores se pueden compartir (la API los carga una vez); los detectores
+        guardan la trayectoria de una persona, así que cada reconocedor tiene los suyos.
+        """
+        detector = second_detector = None
+        if dynamic is not None:
             two_handed = load_catalog().two_handed & set(dynamic.labels)
             detector = DynamicDetector(dynamic, OTHER, two_handed)
             if two_handed:
                 second_detector = DynamicDetector(dynamic, OTHER, two_handed, two_handed_only=True)
-        else:
-            print("Aviso: sin modelo dinámico, solo se reconocen señas estáticas.")
-        return cls(SignClassifier.load(static_path), detector, second_detector)
+        return cls(static, detector, second_detector)
 
     @property
     def signs(self) -> list[str]:
