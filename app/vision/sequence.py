@@ -221,6 +221,7 @@ class DynamicDetector:
         is_left: bool = False,
         other: Hand | None = None,
         body: np.ndarray | None = None,
+        max_duration_ms: int | None = None,
     ) -> str | None:
         """Agrega un cuadro (`points=None` si no hay mano). Devuelve la letra al confirmarse.
 
@@ -246,7 +247,8 @@ class DynamicDetector:
         if self._moving_since is None:
             return None
         ended = self._still_since is not None and t_ms - self._still_since >= END_STILL_MS
-        too_long = t_ms - self._moving_since >= MAX_MOVEMENT_DURATION_MS
+        max_duration = max_duration_ms or MAX_MOVEMENT_DURATION_MS
+        too_long = t_ms - self._moving_since >= max_duration
         if not (ended or too_long):
             return None
         started, self._moving_since = self._moving_since, None

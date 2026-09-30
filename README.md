@@ -66,8 +66,8 @@ En `demo` y `live` la seña aparece en el recuadro de la esquina superior derech
 - **Estáticas**: al sostenerla `VISION_HOLD_MS` (1 s por defecto, como pide RF-06; la
   barra debajo muestra el avance).
 - **Con movimiento** (J, K, Ñ, Q, X, Z): al terminar el movimiento y dejar la mano quieta un
-  instante; hay hasta 2.5 s para terminarla y se compara la ventana de trayectoria de los últimos
-  2 s.
+  instante; hay hasta 2.5 s para terminarla (2 s para palabras de nivel 3) y se compara la ventana
+  de trayectoria de los últimos 2 s. El clip/datos de las palabras nivel 3 conserva 4 s.
 
 `vision train` entrena dos modelos (MLP) y los evalúa dejando fuera personas completas:
 `models/vision/static.joblib` y `models/vision/dynamic.joblib`. Las señas vienen de

@@ -103,6 +103,28 @@ def test_dynamic_sign_is_classified_after_two_and_a_half_seconds_if_still_moving
     assert confirmed_at - started_at < MAX_MOVEMENT_DURATION_MS + 50
 
 
+def test_practice_can_override_dynamic_detection_timeout_for_level_three() -> None:
+    detector = DynamicDetector(FakeClassifier("hola"), OTHER)
+    recognizer = Recognizer(FakeClassifier(OTHER), detector)
+    started_at = None
+    confirmed_at = None
+
+    for t_ms in range(0, 2501, 50):
+        points = hand(0.4 + t_ms / 1000 * 0.5)
+        result = recognizer.update(
+            (points, False), 1.0, t_ms, max_movement_duration_ms=2000
+        )
+        if detector.moving and started_at is None:
+            started_at = t_ms
+        if result is not None:
+            confirmed_at = t_ms
+            break
+
+    assert started_at is not None
+    assert confirmed_at is not None
+    assert 2000 <= confirmed_at - started_at < 2050
+
+
 def test_load_without_models_explains_how_to_train(tmp_path) -> None:
     with pytest.raises(FileNotFoundError, match="vision train"):
         Recognizer.load(tmp_path / "static.joblib", tmp_path / "dynamic.joblib")

@@ -112,6 +112,7 @@ GLOVE_HOLD_MS = 1000
 GLOVE_CAPTURE_WINDOW_MS = 1000
 MOVEMENT_CLIP_MS = 2000
 LEVEL_3_WORD_CLIP_MS = 4000
+LEVEL_3_DETECTION_TIMEOUT_MS = 2000
 CLIP_HISTORY_MS = LEVEL_3_WORD_CLIP_MS + 500
 GLOVE_REVIEW_SAMPLE_MS = 200
 GLOVE_REVIEW_PAGE_SIZE = 10
@@ -1194,6 +1195,7 @@ def practice(
     cara y hombros a la vista), y se guardan también los puntos del cuerpo."""
     recognizer = _load_recognizer()
     known = recognizer.signs
+    sign_catalog = load_sign_catalog()
     requested = _resolve_signs(signs, known) if signs else known
     queue = [sign for sign in requested for _ in range(reps)]
     print(f"Práctica de {participant}: {' '.join(queue)}")
@@ -1228,6 +1230,12 @@ def practice(
             timestamp = int(time.time() * 1000)
             target = queue[index]
             dynamic = recognizer.is_dynamic(target)
+            sign_info = sign_catalog.find(target) if dynamic else None
+            dynamic_timeout_ms = (
+                LEVEL_3_DETECTION_TIMEOUT_MS
+                if sign_info is not None and sign_info.level == 3
+                else None
+            )
             if dynamic:
                 clip_height = int(clean.shape[0] * CLIP_WIDTH / clean.shape[1])
                 clip_height = max(2, clip_height - clip_height % 2)
@@ -1250,7 +1258,12 @@ def practice(
                 body_frames.append((timestamp, body_view.body))
             _draw_hands(frame, detection, tracker.other)
             new_sign = recognizer.update(
-                detection, tracker.handedness_score, timestamp, tracker.other, body_view.body
+                detection,
+                tracker.handedness_score,
+                timestamp,
+                tracker.other,
+                body_view.body,
+                max_movement_duration_ms=dynamic_timeout_ms,
             )
             hold_elapsed_ms: int | None = None
             auto_capture = False

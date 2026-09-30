@@ -187,6 +187,7 @@ class Recognizer:
         t_ms: float,
         other: Hand | None = None,
         body: np.ndarray | None = None,
+        max_movement_duration_ms: int | None = None,
     ) -> str | None:
         """Procesa un cuadro. Devuelve la seña en el instante en que se confirma.
 
@@ -222,7 +223,9 @@ class Recognizer:
                 continue
             points, is_left = hand if hand else (None, False)
             before = detector.last
-            moving_sign = detector.push(t_ms, points, is_left, partner, body)
+            moving_sign = detector.push(
+                t_ms, points, is_left, partner, body, max_movement_duration_ms
+            )
             if detector.last is not before:
                 self.last_movement = detector.last
             self.rejected = self.rejected or detector.rejected
