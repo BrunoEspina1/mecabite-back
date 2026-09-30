@@ -2,7 +2,9 @@
 
 Las reglas son las de `vision live --target` (`app/vision/teacher.py`), ahora sin cámara:
 una ejecución de la seña objetivo cuenta solo si la persona está bien encuadrada (de frente,
-con cara y hombros a la vista) y 3 correctas seguidas aprueban la seña (RF-10).
+con cara y hombros a la vista) y 3 correctas aprueban la seña. A diferencia de `live` (y de
+RF-10, "consecutivas"), un intento fallido no reinicia la cuenta: se decidió así para no
+castigar un error después de dos aciertos.
 
 Solo se comparan señas del mismo tipo que la objetivo: al practicar una estática no se buscan
 movimientos (acomodar la mano no es una J) y al practicar una con movimiento no cuentan las
@@ -27,7 +29,7 @@ from app.vision.body import BodyStatus, body_status
 from app.vision.recognizer import Recognizer
 from app.vision.tracker import PRIMARY_LOST_MS, HandSlots
 
-APPROVE_AFTER = 3  # correctas seguidas (RF-10)
+APPROVE_AFTER = 3  # correctas para aprobar; las fallidas no reinician la cuenta
 RESULT_SHOW_MS = 1500  # tiempo que se sigue reportando un resultado para que la app lo muestre
 WRONG_SIGN_MS = settings.vision_wrong_sign_ms  # otra seña sostenida esto antes de avisar
 # body.py escribe sin acentos (las fuentes de OpenCV solo tienen ASCII); la app sí los tiene.
@@ -190,7 +192,6 @@ class PracticeSession:
                 until,
             )
 
-        self.consecutive = 0
         if label == self.target.data_label:
             return Result(
                 "rejected",

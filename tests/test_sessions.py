@@ -170,6 +170,26 @@ def test_three_framed_executions_in_a_row_approve_the_sign(client: TestClient) -
     assert closed.value.code == 4404
 
 
+def test_a_failed_attempt_keeps_the_correct_count(client: TestClient, models: Models) -> None:
+    session = create(client)
+    attempt = VOTE_MS / 1000 + HOLD_SECONDS + 0.2
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        player.frames(attempt)
+        player.frames(HOLD_SECONDS + 0.3, hand=False)
+        models.static.prediction = ("B", 0.9)
+        failed = player.frames(attempt + 0.5)
+        player.frames(HOLD_SECONDS + 0.3, hand=False)
+        models.static.prediction = ("A", 0.9)
+        second = player.frames(attempt)
+
+    rejected = next(reply for reply in failed if reply["state"] == "rejected")
+    assert rejected["message"].startswith("Se reconoció B")
+    assert rejected["consecutive_correct"] == 1
+    assert any(reply["message"] == "¡Bien! 2 de 3" for reply in second)
+
+
 def test_holding_after_a_confirmation_asks_to_repeat(client: TestClient) -> None:
     session = create(client)
     with client.websocket_connect(session["websocket_path"]) as websocket:

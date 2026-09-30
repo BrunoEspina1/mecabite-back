@@ -53,7 +53,7 @@ iPhone                                              Laptop (misma red Wi-Fi)
 │ Cámara frontal               │ ─ observaciones ─▶ │ mecabite-back                │
 │ MediaPipe Hand Landmarker    │                    │ normaliza landmarks          │
 │ MediaPipe Pose Landmarker    │ ◀── feedback ───── │ evalúa componentes de la seña│
-│ UI de práctica / demo        │                    │ aprueba con 3 seguidas       │
+│ UI de práctica / demo        │                    │ aprueba con 3 correctas      │
 └──────────────────────────────┘                    └──────────────────────────────┘
 ```
 
@@ -441,6 +441,8 @@ exactamente 21 por mano.
   respuestas y mide el tiempo de ida y vuelta (RNF-01: menos de 500 ms).
 - `progress` (0 a 1): avance para una barra en pantalla. En señas estáticas es el tiempo
   sostenido respecto a `hold_time_ms`; en dinámicas va en `null`.
+- `consecutive_correct` (nombre histórico): ejecuciones correctas de la sesión. Un intento
+  fallido **no** la reinicia.
 - En modo `demo`: `target_sign`, `correct`, `approved` y `consecutive_correct` van en `null`
   y `predicted_sign` trae la seña reconocida.
 
@@ -451,7 +453,7 @@ Estados (`state`):
 | `waiting` | Todavía no hay datos suficientes |
 | `candidate` | Se está evaluando una posible seña |
 | `confirmed` | Una ejecución se reconoció correctamente |
-| `approved` | Se cumplieron 3 ejecuciones correctas consecutivas (RF-10) |
+| `approved` | Se cumplieron 3 ejecuciones correctas; las fallidas no reinician la cuenta (RF-10) |
 | `rejected` | La ejecución falló; `components` dice qué falló (RF-13) |
 | `no_hand` | No se detecta la mano |
 | `disconnected` | Falta una fuente requerida (por ejemplo, el guante cuando exista) |
@@ -468,7 +470,7 @@ para el apoyo visual (ícono, animación, color; RNF-09). No debe interpretar el
 | `show_hand` | No se ve la mano | Muestra tu mano a la cámara |
 | `hold_position` | Seña estática correcta, sosteniéndose | Mantén la posición |
 | `correct` | Ejecución confirmada | ¡Bien! 2 de 3 |
-| `approved` | Tercera ejecución consecutiva | ¡Seña aprobada! |
+| `approved` | Tercera ejecución correcta | ¡Seña aprobada! |
 | `wrong_configuration` | Falló la forma de la mano | Revisa la forma de tu mano |
 | `wrong_orientation` | Falló la orientación | Revisa hacia dónde apunta tu palma |
 | `wrong_movement` | Falló el movimiento (niveles 2 y 3) | Revisa el movimiento |
@@ -569,7 +571,7 @@ irrecuperables:
 5. Envía observaciones a 15 Hz o más, y pasa las pruebas de orientación.
 6. Recibe `feedback` sin enviar video.
 7. Una seña estática sostenida al menos 1000 ms se confirma.
-8. Tres ejecuciones correctas consecutivas producen `approved: true`.
+8. Tres ejecuciones correctas producen `approved: true`, aunque haya fallos entre ellas.
 9. Un dato inválido produce un `error` descriptivo sin cerrar la sesión.
 10. El tiempo de ida y vuelta medido en el teléfono se mantiene por debajo de 500 ms.
 
