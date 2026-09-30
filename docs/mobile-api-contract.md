@@ -481,6 +481,11 @@ para el apoyo visual (ícono, animación, color; RNF-09). No debe interpretar el
 `Baja la mano y vuelve a hacer la seña` tras una ejecución confirmada). Un resultado
 (`confirmed`, `rejected`) se sigue reportando 1.5 s para que la app alcance a mostrarlo.
 
+En `practice` solo cuentan como intento las señas del mismo tipo que la objetivo: con una
+estática no se buscan movimientos y con una dinámica no cuentan las formas quietas del camino.
+`wrong_configuration` mientras se sostiene otra forma aparece tras `VISION_WRONG_SIGN_MS`
+(500 ms), y una pérdida de la seña menor a `VISION_GRACE_MS` (300 ms) no reinicia `progress`.
+
 ### `end_session` (app → backend)
 
 ```json

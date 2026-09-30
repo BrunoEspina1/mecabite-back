@@ -110,6 +110,28 @@ def test_stabilizer_clears_after_one_second_without_sign() -> None:
     assert stabilizer.confirmed is None
 
 
+def test_stabilizer_ignores_a_brief_slip() -> None:
+    stabilizer = SignStabilizer(hold_seconds=1.0, grace_seconds=0.3)
+    stabilizer.update("A", 0.0)
+    stabilizer.update("A", 0.3)  # también una seña nueva debe durar la tolerancia
+
+    assert stabilizer.update("B", 0.5) is None  # la mano se movió un poco
+    assert stabilizer.update("B", 0.7) is None
+    assert stabilizer.candidate == "A"
+    assert stabilizer.update("A", 0.8) is None
+    assert stabilizer.update("A", 1.0) == "A"  # el segundo cuenta desde 0, no desde 0.8
+
+
+def test_stabilizer_counts_a_real_change_from_when_it_started() -> None:
+    stabilizer = SignStabilizer(hold_seconds=1.0, grace_seconds=0.3)
+    stabilizer.update("A", 0.0)
+
+    stabilizer.update("B", 0.5)
+    assert stabilizer.update("B", 0.9) is None
+    assert (stabilizer.candidate, stabilizer.since) == ("B", 0.5)
+    assert stabilizer.update("B", 1.5) == "B"
+
+
 def test_alphabet_order_puts_enie_after_n() -> None:
     assert sorted(["O", "Ñ", "A", "N"], key=alphabet_key) == ["A", "N", "Ñ", "O"]
 

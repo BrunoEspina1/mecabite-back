@@ -83,7 +83,7 @@ async def create_session(request: CreateSessionIn, store: Store, load: Loader) -
         models = await load()
     except ModelNotAvailable as error:
         raise ApiError(503, "MODEL_NOT_AVAILABLE", str(error)) from None
-    recognizer = models.new_recognizer()
+    recognizer = models.new_recognizer(with_movement=target is None or target.type != "static")
     if target is not None and target.data_label not in recognizer.signs:
         raise ApiError(
             503,

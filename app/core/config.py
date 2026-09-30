@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, NonNegativeInt, PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Ruta absoluta: la CLI `vision` también lee el .env aunque se ejecute desde otra carpeta.
@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     vision_hold_ms: PositiveInt = 1000  # sostener una estática para confirmarla (RF-06)
     vision_confidence_threshold: float = Field(0.65, ge=0, le=1)
     vision_vote_ms: PositiveInt = 400  # ventana de votos del modelo estático
+    vision_grace_ms: NonNegativeInt = 300  # un tropiezo más corto no reinicia el sostener
+    vision_wrong_sign_ms: NonNegativeInt = 500  # otra seña sostenida esto antes de avisar
 
     # Guante BLE: valores del receptor ESP32 de `manitas/config/settings.py`.
     glove_device_name: str = "GuanteLSM"

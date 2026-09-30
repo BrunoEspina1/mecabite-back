@@ -15,7 +15,7 @@ cp .env.example .env
 ```
 
 Los ajustes del reconocimiento (`VISION_HOLD_MS`, `VISION_CONFIDENCE_THRESHOLD`,
-`VISION_VOTE_MS`) están explicados en [`.env.example`](.env.example). Se aplican al
+`VISION_VOTE_MS`, `VISION_GRACE_MS`, `VISION_WRONG_SIGN_MS`) están explicados en [`.env.example`](.env.example). Se aplican al
 reiniciar la API o la CLI; una variable de entorno tiene prioridad sobre el `.env`.
 
 ## Run

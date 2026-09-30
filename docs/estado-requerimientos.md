@@ -3,7 +3,7 @@
 Control global de [`Requirements.md`](../Requirements.md): qué está hecho, qué falta y qué
 sigue. Es la referencia común para todas las personas y sesiones que trabajan en el repo.
 
-**Última actualización:** 2026-09-29
+**Última actualización:** 2026-09-30
 
 ## Cómo Mantenerlo
 
@@ -111,6 +111,7 @@ En orden de prioridad para el MVP.
 
 | Fecha | Qué se hizo | Requerimientos |
 | --- | --- | --- |
+| 2026-09-30 | Tolerancia al acomodar la mano (práctica por API): con una estática objetivo no se buscan movimientos (se leían como J o Z y reiniciaban las 3 seguidas), con una dinámica no cuentan las formas quietas, una pérdida menor a `VISION_GRACE_MS` (300 ms) no reinicia el sostener y "Revisa la forma de tu mano" espera `VISION_WRONG_SIGN_MS` (500 ms). 79 tests pasan | RF-06, RF-10, RF-13 |
 | 2026-09-29 | `POST /sessions` + WebSocket (`app/api/v1/routes/sessions.py`, `app/sessions/`): convierte las observaciones del iPhone a las unidades de la webcam (proporción, espejo, etiqueta de mano), sesiones de práctica y demo con las reglas de `live --target`, encuadre con `pose_landmarks`, `feedback_code` e ids del catálogo, errores del contrato (`4404`, `INVALID_OBSERVATION` sin cerrar la conexión). Contrato actualizado: `pose_landmarks` en todos los niveles, `adjust_framing`, `503 MODEL_NOT_AVAILABLE`/`SIGN_NOT_TRAINED`. 73 tests pasan. `record: true` aún no guarda nada | RF-02, RF-03, RF-10, RF-12, RF-13, RF-14 |
 | 2026-09-29 | Palabras del nivel 3 desde el dataset de glosas de Zenodo (CC-BY 4.0, 12 personas, video): `vision import-glosses` importa hola, gracias, por_favor y ayuda con mano y cuerpo, recortadas al movimiento. Acierto con personas nuevas: por_favor 90 %, hola 74 %, ayuda 69 %, gracias 47 % (se descarta como `otra`: le falta localización). Mamá pendiente: Mendeley solo tiene fotos sueltas y la etiqueta en inglés ("Mother") | RF-09, RF-03 |
 | 2026-09-29 | Commit del trabajo acumulado (`6b3782e`) | — |

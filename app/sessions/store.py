@@ -28,8 +28,10 @@ class Models:
     dynamic: SignClassifier | None
     version: str
 
-    def new_recognizer(self) -> Recognizer:
-        return Recognizer.from_classifiers(self.static, self.dynamic)
+    def new_recognizer(self, with_movement: bool = True) -> Recognizer:
+        """Sin `with_movement` no se buscan señas con movimiento: al practicar una estática,
+        acomodar la mano no debe leerse como una J o una Z."""
+        return Recognizer.from_classifiers(self.static, self.dynamic if with_movement else None)
 
 
 @cache
