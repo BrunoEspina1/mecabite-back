@@ -17,6 +17,7 @@ from app.sessions.store import ModelNotAvailable, Models, SessionStore, get_stor
 from app.vision.catalog import OTHER
 from app.vision.glove import GloveReading
 from app.vision.recognizer import HOLD_SECONDS, VOTE_MS
+from app.vision.tracker import HandSlots
 
 WIDTH, HEIGHT = 720, 1280
 FRAME_MS = 33
@@ -76,6 +77,12 @@ def session_request(target: str | None = "a", mode: str = "practice", **extra) -
         "calibration_id": None,
         "record": False,
     } | extra
+
+
+@pytest.fixture(autouse=True)
+def no_glove_reference(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Las pruebas no dependen de la inclinación grabada en glove_reference.json."""
+    monkeypatch.setattr("app.sessions.practice.glove_reference", dict)
 
 
 @pytest.fixture
@@ -519,4 +526,90 @@ def test_camera_corrections_can_be_hints_only(
             player.t_ms += FRAME_MS
 
     assert any(r["corrections"] and r["corrections"][0]["part"] == "palm" for r in replies)
+    assert any(reply["state"] == "confirmed" for reply in replies)
+
+
+# --- Mano dominante -------------------------------------------------------------------------
+
+
+def tracked(wrist_x: float, is_left: bool, score: float = 0.95, y: float = 0.6) -> tuple:
+    points = np.zeros((21, 3))
+    points[:, 0] = wrist_x
+    points[:, 1] = y
+    return (points, is_left, score)
+
+
+RIGHT_HAND, LEFT_HAND = tracked(0.7, False), tracked(0.3, True)  # vista en espejo
+
+
+@pytest.mark.parametrize(("dominant_left", "expected"), [(False, RIGHT_HAND), (True, LEFT_HAND)])
+def test_with_both_hands_the_dominant_one_is_the_reference(dominant_left, expected) -> None:
+    slots = HandSlots(promote_after_ms=300, dominant_left=dominant_left)
+    for order in ([LEFT_HAND, RIGHT_HAND], [RIGHT_HAND, LEFT_HAND]):
+        primary, other = slots.assign(order, 0)
+        assert primary is expected
+
+
+def test_without_a_dominant_hand_the_first_one_stays_the_reference() -> None:
+    slots = HandSlots(promote_after_ms=300)
+    assert slots.assign([LEFT_HAND, RIGHT_HAND], 0)[0] is LEFT_HAND
+
+
+def test_hands_close_together_use_confident_labels() -> None:
+    right, left = tracked(0.5, False), tracked(0.51, True)
+    assert HandSlots(dominant_left=False).assign([left, right], 0)[0] is right
+    unsure = tracked(0.51, True, score=0.5)
+    assert HandSlots(dominant_left=False).assign([unsure, right], 0)[0] is unsure
+
+
+def test_the_reference_hand_does_not_change_mid_movement() -> None:
+    slots = HandSlots(promote_after_ms=300, dominant_left=False)
+    assert slots.assign([RIGHT_HAND, LEFT_HAND], 0)[0] is RIGHT_HAND
+    # Se cruzan poco a poco (una más arriba que la otra): la derecha termina a la izquierda.
+    t_ms = 0
+    for step in range(1, 11):
+        t_ms += 33
+        right = tracked(0.7 - 0.025 * step, False)
+        left = tracked(0.3 + 0.025 * step, True, y=0.7)
+        primary, _ = slots.assign([left, right], t_ms, locked=True)
+        assert primary is right, "a media trayectoria se sigue la misma mano"
+    for _ in range(5):
+        t_ms += 33
+        primary, _ = slots.assign([left, right], t_ms)
+    assert primary is left, "ya sin movimiento, la mano más a la derecha pasa a ser la derecha"
+
+
+def test_the_session_uses_the_chosen_hand_side_not_the_mediapipe_label(client: TestClient) -> None:
+    session = create(client, dominant_hand="right")
+    assert session["dominant_hand"] == "right"
+    practice = app.dependency_overrides[get_store]().get(session["session_id"]).practice
+
+    # Una sola mano con etiqueta dudosa (puño de perfil): cuenta como la dominante.
+    primary, other = practice._with_sides(tracked(0.5, True, score=0.6), None)
+    assert (primary[1], other, practice.only_other_hand) == (False, None, False)
+    # Con las dos, cada una toma su lado.
+    primary, other = practice._with_sides(tracked(0.7, True), tracked(0.3, True))
+    assert (primary[1], other[1]) == (False, True)
+
+
+def test_only_the_other_hand_in_view_is_recognized_but_not_corrected(client: TestClient) -> None:
+    session = create(client, dominant_hand="right")
+    other_hand = {
+        "landmarks": HAND["landmarks"],
+        # Vista en espejo: MediaPipe llama "Right" a la mano izquierda de la persona.
+        "handedness": {"label": "Right", "score": 0.95},
+    }
+    with client.websocket_connect(session["websocket_path"]) as websocket:
+        websocket.receive_json()
+        player = Player(websocket)
+        replies = []
+        for _ in range(int((VOTE_MS / 1000 + HOLD_SECONDS + 0.3) * 1000 / FRAME_MS)):
+            message = observation(player.sequence, player.t_ms, glove=glove(menique=3))
+            message["vision"]["hands"] = [other_hand]
+            websocket.send_json(message)
+            replies.append(websocket.receive_json())
+            player.sequence += 1
+            player.t_ms += FRAME_MS
+
+    assert all(reply["corrections"] == [] for reply in replies)
     assert any(reply["state"] == "confirmed" for reply in replies)

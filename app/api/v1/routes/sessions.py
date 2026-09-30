@@ -101,13 +101,20 @@ async def create_session(
         request.mode,
         target.level if target else None,
         models.version,
-        PracticeSession(recognizer, catalog, target, glove.recent if glove else None),
+        PracticeSession(
+            recognizer,
+            catalog,
+            target,
+            glove.recent if glove else None,
+            dominant_hand=request.dominant_hand,
+        ),
     )
     return CreateSessionOut(
         session_id=session.id,
         mode=request.mode,
         target_sign=target.id if target else None,
         level=session.level,
+        dominant_hand=request.dominant_hand,
         websocket_path=websocket_path(session.id),
         expires_in_seconds=int(store.ttl_seconds),
         catalog_version=catalog.version,

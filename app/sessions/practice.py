@@ -42,7 +42,7 @@ from app.sessions.protocol import GloveIn, ObservationIn, VisionIn
 from app.vision.body import BodyStatus, body_status
 from app.vision.glove import FINGERS, GLOVE_VALUES, GloveReading
 from app.vision.recognizer import Recognizer
-from app.vision.tracker import PRIMARY_LOST_MS, HandSlots
+from app.vision.tracker import LABEL_MIN_SCORE, PRIMARY_LOST_MS, HandSlots
 
 APPROVE_AFTER = 3  # correctas para aprobar; las fallidas no reinician la cuenta
 RESULT_SHOW_MS = 1500  # tiempo que se sigue reportando un resultado para que la app lo muestre
@@ -135,11 +135,17 @@ class PracticeSession:
         target: Sign | None,
         glove_source: GloveSource | None = None,
         glove_required: bool | None = None,
+        dominant_hand: str | None = None,
     ):
         """`target=None`: modo demo (reconoce cualquier seña del catálogo, RF-14).
 
         `glove_source`: lecturas recientes del guante por BLE; la lectura de la observación, si
         viene, tiene prioridad. Con `glove_required` la práctica no evalúa sin guante.
+
+        `dominant_hand` ("left"/"right"): la mano de referencia. Con las dos manos a la vista es
+        la principal (la que se reconoce y se corrige); con una sola, se usa la que se ve. Su
+        lado se toma de la elección de la persona y no de la etiqueta de MediaPipe, que se
+        equivoca con el puño o de perfil y haría comparar la mano en espejo con los modelos.
         """
         self.recognizer = recognizer
         self.catalog = catalog
@@ -151,7 +157,11 @@ class PracticeSession:
         self.reference = glove_reference().get(target.id) if target else None
         self.filter = CorrectionFilter()
         self.live: list[Correction] = []  # correcciones estables del momento
-        self.slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS)
+        self.dominant_left = None if dominant_hand is None else dominant_hand == "left"
+        self.slots = HandSlots(promote_after_ms=PRIMARY_LOST_MS, dominant_left=self.dominant_left)
+        # La única mano a la vista es la no dominante: se reconoce, pero no se corrige (el guante
+        # y `expected` describen la dominante).
+        self.only_other_hand = False
         self.last_t_ms: float | None = None
         self.attempts = 0
         self.correct_attempts = 0
@@ -174,7 +184,8 @@ class PracticeSession:
         self.last_t_ms = t_ms
 
         hands, body, aspect = to_tracker_units(observation.vision)
-        primary, other = self.slots.assign(hands, t_ms)
+        primary, other = self.slots.assign(hands, t_ms, locked=self.recognizer.moving)
+        primary, other = self._with_sides(primary, other)
         detection = primary[:2] if primary else None
         new_sign = self.recognizer.update(
             detection,
@@ -506,11 +517,25 @@ class PracticeSession:
             self.glove_history.append((t_ms, state))
         return state
 
+    def _with_sides(self, primary: TrackedHand | None, other: TrackedHand | None) -> tuple:
+        """Pone a cada mano el lado que eligió la persona (ver `dominant_hand`)."""
+        self.only_other_hand = False
+        if self.dominant_left is None or primary is None:
+            return primary, other
+        points, is_left, score = primary
+        if other is None and is_left != self.dominant_left and score >= LABEL_MIN_SCORE:
+            self.only_other_hand = True
+            return primary, other
+        primary = (points, self.dominant_left, score)
+        if other is not None:
+            other = (other[0], not self.dominant_left, other[2])
+        return primary, other
+
     def _live_corrections(
         self, detection: tuple[np.ndarray, bool] | None, body: np.ndarray | None, t_ms: float
     ) -> list[Correction]:
         """Correcciones que se mantienen; durante un movimiento solo se revisan los dedos."""
-        if not self.practice or self.approved or detection is None:
+        if not self.practice or self.approved or detection is None or self.only_other_hand:
             return self.filter.update([], t_ms)
         still = not self.recognizer.moving
         corrections = evaluate(
@@ -529,6 +554,8 @@ class PracticeSession:
         movió al final todavía no pasa el filtro de parpadeo) más las correcciones estables.
         Con movimiento: el guante a lo largo del trazo, contra la forma e inclinación de la seña.
         """
+        if self.only_other_hand:
+            return []
         if self.target.type == "static":
             fresh = evaluate(self.target, None, None, self.glove, self.reference)
             seen = {c.key for c in fresh}

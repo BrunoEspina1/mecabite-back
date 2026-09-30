@@ -33,6 +33,11 @@ NUM_BODY_LANDMARKS = 33
 MAX_HAND_JUMP = 0.25  # alturas de imagen: de un cuadro al siguiente una mano no salta más
 FORGET_HAND_MS = 1000  # sin ver una mano este tiempo, se olvida dónde estaba
 PRIMARY_LOST_MS = 300  # sin la principal este tiempo, la otra pasa a ser la principal
+# Mano dominante: las muñecas deben estar al menos así de separadas (alturas de imagen) para
+# saber cuál es cuál por su posición; si no, se usan las etiquetas de MediaPipe.
+MIN_WRIST_SEPARATION = 0.05
+LABEL_MIN_SCORE = 0.8  # etiqueta de MediaPipe confiable para decidir qué mano es
+SWAP_AFTER_FRAMES = 5  # cuadros seguidos que la otra debe parecer la dominante para cambiarlas
 # Puntos del torso hacia arriba (cara, hombros, brazos, cadera); las piernas no se dibujan.
 UPPER_BODY = 25
 
@@ -63,15 +68,40 @@ class HandSlots:
     primera que apareció, como la seguiría MediaPipe con una sola mano. Con
     `promote_after_ms`, si la principal no se ve ese tiempo y la otra sí, la otra pasa a ser
     la principal.
+
+    Con `dominant_left` (la mano con la que la persona hace las señas) y las dos manos a la
+    vista, la principal es la dominante: se decide al verlas juntas por primera vez y después
+    se sigue por continuidad; solo se cambian si la otra parece la dominante
+    SWAP_AFTER_FRAMES cuadros seguidos, y nunca con `locked` (a media trayectoria). Las manos
+    son tuplas (puntos, izquierda, score) como las de `HandTracker.detect_hands`.
     """
 
-    def __init__(self, promote_after_ms: float | None = None):
+    def __init__(self, promote_after_ms: float | None = None, dominant_left: bool | None = None):
         self.promote_after_ms = promote_after_ms
+        self.dominant_left = dominant_left
         self._last: list[tuple[float, np.ndarray] | None] = [None, None]  # (t_ms, muñeca)
         self._seen = [False, False]  # si el lugar tuvo mano en el cuadro anterior
         self._primary_ms = 0.0
+        self._both_ms: float | None = None  # última vez que se vieron las dos manos
+        self._swap_votes = 0
 
-    def assign(self, hands: list[H], t_ms: float) -> list[H | None]:
+    def dominant_slot(self, first: H, second: H) -> int | None:
+        """0 o 1: cuál de las dos es la dominante; None si no se puede saber.
+
+        En las unidades de HandTracker (vista en espejo) la mano derecha de la persona queda
+        con la muñeca más a la derecha. Si las muñecas están casi alineadas (manos juntas o
+        cruzadas) se usan las etiquetas de MediaPipe, solo si ambas son confiables y distintas.
+        """
+        first_x, second_x = first[0][0, 0], second[0][0, 0]
+        if abs(first_x - second_x) >= MIN_WRIST_SEPARATION:
+            right = 0 if first_x > second_x else 1
+        elif first[1] != second[1] and min(first[2], second[2]) >= LABEL_MIN_SCORE:
+            right = 1 if first[1] else 0
+        else:
+            return None
+        return 1 - right if self.dominant_left else right
+
+    def assign(self, hands: list[H], t_ms: float, locked: bool = False) -> list[H | None]:
         self._last = [
             last if last is not None and t_ms - last[0] <= FORGET_HAND_MS else None
             for last in self._last
@@ -94,6 +124,8 @@ class HandSlots:
                 slot = 1 - slot
             slots[slot] = hands[0]
 
+        if self.dominant_left is not None:
+            slots = self._put_dominant_first(slots, t_ms, locked)
         if slots[0] is not None:
             self._primary_ms = t_ms
         elif (
@@ -108,6 +140,25 @@ class HandSlots:
             if hand is not None:
                 self._last[slot] = (t_ms, hand[0][0, :2])
         self._seen = [hand is not None for hand in slots]
+        return slots
+
+    def _put_dominant_first(self, slots: list[H | None], t_ms: float, locked: bool) -> list:
+        if slots[0] is None or slots[1] is None:
+            if self._both_ms is not None and t_ms - self._both_ms > FORGET_HAND_MS:
+                self._both_ms = None  # al volver a verlas juntas se decide otra vez
+            return slots
+        dominant = self.dominant_slot(slots[0], slots[1])
+        first_time = self._both_ms is None
+        self._both_ms = t_ms
+        if dominant == 1:
+            self._swap_votes += 1
+        elif dominant == 0:
+            self._swap_votes = 0
+        if dominant == 1 and not locked and (first_time or self._swap_votes >= SWAP_AFTER_FRAMES):
+            slots = [slots[1], slots[0]]
+            self._last.reverse()
+            self._seen.reverse()
+            self._swap_votes = 0
         return slots
 
 

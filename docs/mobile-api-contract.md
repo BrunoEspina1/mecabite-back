@@ -30,6 +30,10 @@ contrato con datos simulados mientras se implementa.
   dedo anular") y `glove` (estado del guante). Una ejecución que la cámara reconoce pero el
   guante contradice se rechaza con sus correcciones. Con `GLOVE_REQUIRED=true`,
   `required_inputs` incluye `"glove"` y sin guante el estado es `disconnected`.
+- **Mano dominante:** `POST /sessions` acepta `dominant_hand` (`"left"`/`"right"`, la mano con
+  la que la persona hace las señas). Es la mano de referencia: con las dos manos a la vista es
+  la que se compara con los modelos y el guante; con una sola se usa la que se ve. `null` (o sin
+  el campo): la primera mano que aparece, como antes.
 
 ### Cambios Respecto A 0.1.0
 
@@ -306,6 +310,7 @@ Solicitud:
   "device_id": "iphone-dev-1",
   "client_version": "0.2.0",
   "calibration_id": null,
+  "dominant_hand": "right",
   "record": false
 }
 ```
@@ -315,6 +320,7 @@ Solicitud:
 | `mode` | `practice`: evalúa `target_sign` y cuenta ejecuciones (RF-12). `demo`: reconoce cualquier seña del catálogo y la reporta (RF-14); `target_sign` va en `null` |
 | `target_sign` | `id` del catálogo |
 | `calibration_id` | `null` en el MVP; se usará con la calibración del guante |
+| `dominant_hand` | `"left"`, `"right"` o `null`. Ver [Mano dominante](#mano-dominante) |
 | `record` | `true` para guardar los landmarks de la sesión (nunca video) y usarlos para entrenar. Solo con consentimiento de la persona. Por defecto `false`. **Aún no se guarda nada** aunque venga en `true`: falta la política (ver Pendientes) |
 
 Respuesta `201`:
@@ -333,6 +339,23 @@ Respuesta `201`:
   "model_version": "vision-0.1.0"
 }
 ```
+
+La respuesta repite `dominant_hand`.
+
+#### Mano dominante
+
+La app detecta hasta 2 manos. En señas de una mano manda solo la elegida; en las de dos manos
+(gracias, por favor, ayuda) manda las dos, y el backend decide cuál es cuál:
+
+- **Dos manos:** la dominante es la principal (se reconoce, se corrige y se compara con el
+  guante); la otra sigue a la dominante en las señas de dos manos. Se decide al verlas juntas
+  por primera vez, por la posición de las muñecas (en espejo, la derecha queda a la derecha) o,
+  si están juntas, por las etiquetas de MediaPipe cuando son confiables. Después se sigue por
+  continuidad y nunca se cambia a media trayectoria.
+- **Una mano:** se usa la que se ve (como antes). Su lado se toma de `dominant_hand` y no de la
+  etiqueta de MediaPipe, que se equivoca con el puño o de perfil, salvo que MediaPipe esté
+  seguro (score ≥ 0.8) de que es la otra: entonces se reconoce pero no se corrige, porque el
+  guante y `expected` describen la mano dominante.
 
 Reglas:
 

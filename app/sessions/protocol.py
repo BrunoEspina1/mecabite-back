@@ -20,6 +20,9 @@ class CreateSessionIn(BaseModel):
     device_id: str | None = None
     client_version: str
     calibration_id: str | None = None
+    # Mano con la que la persona hace las señas: es la mano de referencia (la que se compara con
+    # los modelos y con el guante). None: la primera mano que aparece, como antes.
+    dominant_hand: Literal["left", "right"] | None = None
     # Aún no se guarda nada aunque venga en true: falta definir la política (contrato).
     record: bool = False
 
@@ -29,6 +32,7 @@ class CreateSessionOut(BaseModel):
     mode: Literal["practice", "demo"]
     target_sign: str | None
     level: int | None
+    dominant_hand: Literal["left", "right"] | None = None
     status: Literal["created"] = "created"
     websocket_path: str
     expires_in_seconds: int

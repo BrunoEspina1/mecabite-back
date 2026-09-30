@@ -111,6 +111,7 @@ En orden de prioridad para el MVP.
 
 | Fecha | Qué se hizo | Requerimientos |
 | --- | --- | --- |
+| 2026-09-30 | Mano dominante (`dominant_hand` en `POST /sessions`): con dos manos la elegida es la de referencia para los modelos y el guante, sin cambiarla a media trayectoria; con una se usa la que se ve. La app manda la mano elegida en Ajustes. 125 tests pasan | RF-04, RF-09 |
 | 2026-09-30 | Correcciones concretas con guante + cámara: `corrections` y `glove` en `feedback`, `expected` por seña en `signs.json` (con las fallas del guante), guante por BLE en la API (`GLOVE_LIVE`, `GLOVE_REQUIRED`), `vision glove-reference` y la app las muestra. 107 tests pasan | RF-01, RF-04, RF-13 |
 | 2026-09-30 | Práctica por API: un fallo ya no reinicia la cuenta de correctas (ver Decisiones) | RF-10 |
 | 2026-09-30 | Tolerancia al acomodar la mano (práctica por API): con una estática objetivo no se buscan movimientos (se leían como J o Z y reiniciaban las 3 seguidas), con una dinámica no cuentan las formas quietas, una pérdida menor a `VISION_GRACE_MS` (300 ms) no reinicia el sostener y "Revisa la forma de tu mano" espera `VISION_WRONG_SIGN_MS` (500 ms). 79 tests pasan | RF-06, RF-10, RF-13 |
