@@ -69,6 +69,10 @@ class GloveCollector:
             asyncio.run(self._run())
         except Exception as error:  # el error se muestra en la ventana principal al guardar
             self.error = error
+            print(
+                f"El lector BLE del guante terminó: {type(error).__name__}: {error}",
+                flush=True,
+            )
 
     async def _run(self) -> None:
         try:
@@ -79,24 +83,31 @@ class GloveCollector:
             ) from error
 
         while not self._stop.is_set():
-            print(f"Buscando guante BLE '{self.device_name}'...")
-            device = await BleakScanner.find_device_by_name(self.device_name, timeout=10.0)
-            if device is None:
-                print(f"No se encontró '{self.device_name}'; reintentando...")
-                await asyncio.sleep(2)
-                continue
+            print(f"Buscando guante BLE '{self.device_name}'...", flush=True)
             try:
+                device = await BleakScanner.find_device_by_name(self.device_name, timeout=10.0)
+                if device is None:
+                    print(f"No se encontró '{self.device_name}'; reintentando...", flush=True)
+                    await asyncio.sleep(2)
+                    continue
                 async with BleakClient(device.address, timeout=15.0) as client:
                     self._buffer.clear()
                     await client.start_notify(self.characteristic_uuid, self._on_notification)
-                    print("Conexión BLE del guante activa.")
+                    self.error = None
+                    print("Conexión BLE del guante activa; esperando datos...", flush=True)
                     while not self._stop.is_set() and client.is_connected:
                         if await asyncio.to_thread(self._stop.wait, 0.25):
                             break
+                    if not self._stop.is_set():
+                        print("Se perdió la conexión BLE del guante; reconectando...", flush=True)
             except Exception as error:
                 self.error = error
-                print(f"Error BLE ({type(error).__name__}); reintentando...")
-                await asyncio.sleep(3)
+                print(
+                    f"Error BLE ({type(error).__name__}: {error}); reintentando en 3 s...",
+                    flush=True,
+                )
+                if not self._stop.is_set():
+                    await asyncio.sleep(3)
 
     def _on_notification(self, _sender, data: bytearray) -> None:
         self._buffer.extend(data)
@@ -183,11 +194,16 @@ class GloveFeed(GloveCollector):
         self._recent: dict[int, deque[GloveReading]] = {
             emitter: deque(maxlen=history) for emitter in EMITTERS
         }
+        self._announced_emitters: set[int] = set()
 
     def _store(self, packet: tuple[int, int, list[float]]) -> None:
         t_ms, emitter, values = packet
         with self._lock:
             self._recent[emitter].append(GloveReading.from_values(t_ms, values))
+            first_packet = emitter not in self._announced_emitters
+            self._announced_emitters.add(emitter)
+        if first_packet:
+            print(f"Primer paquete válido recibido del guante BLE E{emitter}.", flush=True)
 
     def latest(self, emitter: int, max_age_ms: float = 500) -> GloveReading | None:
         readings = self.recent(max_age_ms, emitter)

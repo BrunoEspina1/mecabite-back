@@ -665,6 +665,21 @@ def test_the_feed_keeps_each_glove_apart() -> None:
     assert feed.recent(100, 2, now_ms=1200) == []
 
 
+def test_the_feed_announces_the_first_valid_packet_from_each_glove(capsys) -> None:
+    from app.vision.glove import GloveFeed
+
+    feed = GloveFeed("GuanteLSM", "uuid")
+    packet = [0] * 6 + [3, 3, 3, 3, 3]
+    feed._store((1000, 1, packet))
+    feed._store((1100, 1, packet))
+    feed._store((1200, 2, packet))
+
+    assert capsys.readouterr().out.splitlines() == [
+        "Primer paquete válido recibido del guante BLE E1.",
+        "Primer paquete válido recibido del guante BLE E2.",
+    ]
+
+
 def test_input_log_prints_both_hands_and_gloves(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:

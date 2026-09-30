@@ -13,7 +13,11 @@ _feed: GloveFeed | None = None
 
 def start_glove_feed() -> GloveFeed | None:
     global _feed
-    if settings.glove_live and _feed is None:
+    if not settings.glove_live:
+        print("Guante BLE desactivado (GLOVE_LIVE=false); no se intentará conectar.", flush=True)
+        return None
+    if _feed is None:
+        print("GLOVE_LIVE=true; iniciando lector BLE del guante.", flush=True)
         _feed = GloveFeed(settings.glove_device_name, settings.glove_characteristic_uuid)
         _feed.start()
     return _feed
