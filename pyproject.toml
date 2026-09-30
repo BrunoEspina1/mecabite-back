@@ -8,8 +8,25 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.142.0",
+    "bleak>=1.1.1",
+    "joblib>=1.5.2",
+    "mediapipe==0.10.35",
+    "numpy>=2.2.6",
+    "opencv-python>=4.12.0.88",
     "pydantic-settings>=2.15.0",
+    "scikit-learn>=1.7.2",
 ]
+
+[project.scripts]
+vision = "app.vision.teacher:main"
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "app"
+module-root = ""
 
 [dependency-groups]
 dev = [
@@ -17,9 +34,6 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
-
-[tool.uv]
-package = false
 
 [tool.ruff]
 line-length = 100
