@@ -11,11 +11,20 @@
 | --- | --- |
 | `GET /health` | Implementado |
 | `GET /catalog/signs` | Implementado |
-| `POST /sessions` y WebSocket `/ws/sessions/{id}` | Pendiente (siguiente entrega) |
+| `POST /sessions` y WebSocket `/ws/sessions/{id}` | Implementado |
 | `POST /simulations/predict` | Pendiente |
 
 Lo pendiente ya tiene su formato definido aquí; la app puede construirse contra este
 contrato con datos simulados mientras se implementa.
+
+### Cambios Dentro De 0.2.x (compatibles)
+
+- `POST /sessions` y el WebSocket ya están implementados (`app/api/v1/routes/sessions.py`).
+- `pose_landmarks` se envía **en todos los niveles**: el backend lo usa para validar que la
+  persona esté de frente, con cara y hombros a la vista. Una ejecución correcta sin buen
+  encuadre no cuenta. `required_inputs` de `ready` es `["hand", "pose"]`.
+- Nuevo `feedback_code`: `adjust_framing` (el `message` dice qué corregir).
+- Nuevos errores de `POST /sessions`: `503 MODEL_NOT_AVAILABLE` y `503 SIGN_NOT_TRAINED`.
 
 ### Cambios Respecto A 0.1.0
 
@@ -43,7 +52,7 @@ iPhone                                              Laptop (misma red Wi-Fi)
 ┌──────────────────────────────┐   WebSocket JSON   ┌──────────────────────────────┐
 │ Cámara frontal               │ ─ observaciones ─▶ │ mecabite-back                │
 │ MediaPipe Hand Landmarker    │                    │ normaliza landmarks          │
-│ (Pose Landmarker en nivel 3) │ ◀── feedback ───── │ evalúa componentes de la seña│
+│ MediaPipe Pose Landmarker    │ ◀── feedback ───── │ evalúa componentes de la seña│
 │ UI de práctica / demo        │                    │ aprueba con 3 seguidas       │
 └──────────────────────────────┘                    └──────────────────────────────┘
 ```
@@ -104,10 +113,11 @@ WebSocket: ws://<ip-de-la-laptop>:8000/api/v1/ws/sessions/{session_id}
 
 ### Mano (MediaPipe Hand Landmarker)
 
-- Configurar `num_hands = 2` y enviar todas las manos detectadas, en el orden en que las
-  entrega MediaPipe. Gracias y por favor se hacen con las dos manos (`hands: 2` en el
-  catálogo) y solo cuentan si la otra mano también participa. El backend decide cuál es la
-  mano principal: las letras se reconocen con una sola.
+- Enviar todas las manos detectadas (máximo 2), en el orden en que las entrega MediaPipe. La
+  app actual usa `num_hands = 1`: gracias y por favor (`hands: 2` en el catálogo) solo
+  cuentan si la otra mano también participa, y el backend la detecta con las muñecas del
+  cuerpo (`pose_landmarks`). Con `num_hands = 2` también se usa la segunda mano. El backend
+  decide cuál es la mano principal: las letras se reconocen con una sola.
 - `landmarks`: los 21 puntos **normalizados** (`x`, `y` de 0 a 1 respecto al ancho y alto
   de la imagen; `z` tal como lo entrega MediaPipe), en el orden oficial. No enviar los
   *world landmarks* ni escalar las coordenadas: el backend corrige la proporción de la
@@ -130,12 +140,16 @@ Pruebas rápidas para validar la orientación antes de integrar:
 2. Mano derecha levantada a la altura del hombro derecho: con `mirrored: true` la muñeca debe
    quedar en `x > 0.5`; con `mirrored: false`, en `x < 0.5`.
 
-### Cuerpo (MediaPipe Pose Landmarker) — reservado para el nivel 3
+### Cuerpo (MediaPipe Pose Landmarker)
 
 - `pose_landmarks`: 33 puntos `[x, y, z, visibility]` normalizados, con las mismas reglas de
-  orientación que la mano.
-- Enviar `null` en los niveles 1 y 2. El backend todavía no lo procesa; el formato puede
-  ajustarse cuando se definan las zonas de localización con la persona intérprete.
+  orientación que la mano, del **mismo cuadro y timestamp** que las manos.
+- Enviar en **todos los niveles**; `null` solo si no se detecta cuerpo. El backend lo usa para
+  el encuadre (de frente, con cara y hombros visibles; si no, `adjust_framing`) y para saber
+  si la otra mano participa. La localización del nivel 3 queda `not_available` hasta definir
+  las zonas con la persona intérprete.
+- Prueba rápida: de frente a la cámara, los puntos 11 y 12 (hombros) y 0 (nariz) deben tener
+  `visibility > 0.5`.
 
 ### Guante — reservado
 
@@ -263,7 +277,7 @@ IDs del catálogo:
 `otra`, `reposo` y `transicion` son clases internas del reconocimiento y nunca aparecen en
 el catálogo ni en `predicted_sign`.
 
-### `POST /sessions` — pendiente
+### `POST /sessions` — implementado
 
 Crea una sesión temporal. Una sesión evalúa una sola seña; para pasar a la siguiente se
 cierra y se crea otra.
@@ -287,7 +301,7 @@ Solicitud:
 | `mode` | `practice`: evalúa `target_sign` y cuenta ejecuciones (RF-12). `demo`: reconoce cualquier seña del catálogo y la reporta (RF-14); `target_sign` va en `null` |
 | `target_sign` | `id` del catálogo |
 | `calibration_id` | `null` en el MVP; se usará con la calibración del guante |
-| `record` | `true` para guardar los landmarks de la sesión (nunca video) y usarlos para entrenar. Solo con consentimiento de la persona. Por defecto `false` |
+| `record` | `true` para guardar los landmarks de la sesión (nunca video) y usarlos para entrenar. Solo con consentimiento de la persona. Por defecto `false`. **Aún no se guarda nada** aunque venga en `true`: falta la política (ver Pendientes) |
 
 Respuesta `201`:
 
@@ -355,12 +369,12 @@ anular, menique`. Responde con el mismo formato que el mensaje `feedback`.
   "protocol_version": "0.2.0",
   "model_version": "vision-0.1.0",
   "min_sample_rate_hz": 15,
-  "required_inputs": ["hand"],
+  "required_inputs": ["hand", "pose"],
   "server_timestamp_ms": 0
 }
 ```
 
-`required_inputs` incluye `"pose"` en el nivel 3 y, cuando exista, `"glove"`.
+`required_inputs` incluye `"glove"` cuando exista el guante.
 
 ### `observation` (app → backend)
 
@@ -392,7 +406,7 @@ exactamente 21 por mano.
 | --- | --- |
 | `vision.hands` | `[]` si no se detecta mano; máximo 2 elementos |
 | `vision.hands[].landmarks` | Exactamente 21 elementos `[x, y, z]` |
-| `vision.pose_landmarks` | `null` en niveles 1 y 2 |
+| `vision.pose_landmarks` | Exactamente 33 elementos `[x, y, z, visibility]`; `null` si no se detecta cuerpo |
 | `glove` | `null` en el MVP |
 
 ### `feedback` (backend → app)
@@ -461,6 +475,11 @@ para el apoyo visual (ícono, animación, color; RNF-09). No debe interpretar el
 | `wrong_localization` | Falló la ubicación (nivel 3) | Revisa dónde colocas la mano |
 | `too_slow` | Seña dinámica de más de `max_duration_ms` | Hazla en menos de 3 segundos |
 | `use_both_hands` | Seña de dos manos hecha con una (`hands: 2`) | Esta seña se hace con las dos manos |
+| `adjust_framing` | No se ve el cuerpo de frente con cara y hombros; o seña correcta sin buen encuadre (no cuenta) | Aléjate un poco: no se ven tus dos hombros |
+
+`feedback_code` va en `null` mientras se espera la seña (por ejemplo, `Haz la seña A` o
+`Baja la mano y vuelve a hacer la seña` tras una ejecución confirmada). Un resultado
+(`confirmed`, `rejected`) se sigue reportando 1.5 s para que la app alcance a mostrarlo.
 
 ### `end_session` (app → backend)
 
@@ -505,6 +524,8 @@ Respuesta REST:
 | `422 INVALID_OBSERVATION` | Forma, rango o timestamp inválido |
 | `426 PROTOCOL_VERSION_UNSUPPORTED` | Versión de protocolo incompatible |
 | `500 INFERENCE_ERROR` | Error interno del modelo |
+| `503 MODEL_NOT_AVAILABLE` | El servidor no tiene modelo entrenado (`vision train` y reiniciar) |
+| `503 SIGN_NOT_TRAINED` | La seña está en el catálogo pero el modelo aún no tiene datos de ella |
 
 En el WebSocket los errores llegan como mensaje y **no cierran la conexión**, salvo que sean
 irrecuperables:
@@ -522,12 +543,12 @@ irrecuperables:
 
 - [ ] URL base configurable; nada fijo en el código.
 - [ ] `NSLocalNetworkUsageDescription` en `Info.plist` y excepción de ATS para red local.
-- [ ] MediaPipe Hand Landmarker en modo video en vivo, `num_hands = 2`.
+- [ ] MediaPipe Hand y Pose Landmarker en modo video en vivo, con el mismo cuadro y timestamp.
 - [ ] Enviar landmarks normalizados sin escalar, más `image_width`, `image_height`,
       `mirrored` y `handedness` crudo. Pasar las dos pruebas de orientación.
 - [ ] Enviar cada cuadro, incluidos los que no tienen mano (`hands: []`).
 - [ ] `timestamp_ms` del momento de captura, monotónico y relativo al inicio de la sesión.
-- [ ] `glove: null` y `pose_landmarks: null` por ahora.
+- [ ] `glove: null` por ahora; `pose_landmarks` en todos los niveles.
 - [ ] Mostrar `message`, usar `feedback_code` para el apoyo visual y `progress` para la barra.
 - [ ] Tratar `not_available` como espera, no como fallo.
 - [ ] Reconectar a la misma sesión al volver de segundo plano.
