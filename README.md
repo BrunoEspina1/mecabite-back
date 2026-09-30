@@ -94,6 +94,7 @@ aprobarla y pasa a la siguiente:
 ```bash
 vision practice --participant omar                  # todas las señas que conoce el modelo
 vision practice --participant omar --signs N,U,X --reps 3
+vision practica_guante --participant omar --signs A,B,C --reps 3
 vision train                                        # aprende de lo guardado
 vision clear                                        # borra todo lo de práctica (-y sin preguntar)
 ```
@@ -118,6 +119,11 @@ Se guarda en `data/practice/` (fuera de Git):
 
 Las forzadas son las más valiosas: son justo los casos en que el modelo falla contigo.
 `vision clear` solo borra `data/practice/`; los datasets de `data/vision/` no se tocan.
+
+`vision practica_guante` requiere el receptor BLE encendido. Guarda los landmarks en
+`data/practice/landmarks/<seña>/` y los paquetes crudos compatibles con `manitas` en
+`data/practice/glove/<seña>/`. La configuración BLE está en `GLOVE_DEVICE_NAME` y
+`GLOVE_CHARACTERISTIC_UUID` del `.env`.
 `--no-review` guarda sin mostrar la captura. Las capturas incluyen cara y cuerpo: son datos
 personales, solo para desarrollo, con consentimiento de quien graba (en la app el video no se
 guarda, RNF-10).

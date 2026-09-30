@@ -8,6 +8,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.142.0",
+    "bleak>=1.1.1",
     "joblib>=1.5.2",
     "mediapipe==0.10.35",
     "numpy>=2.2.6",

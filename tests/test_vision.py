@@ -6,6 +6,7 @@ import pytest
 from app.vision import teacher
 from app.vision.classifier import SignClassifier, make_backend
 from app.vision.features import NUM_FEATURES, landmarks_to_vector
+from app.vision.glove import GLOVE_VALUES, write_packets
 from app.vision.tracker import HandSlots
 
 
@@ -215,3 +216,13 @@ def test_record_row_matches_header_with_and_without_other_hand() -> None:
     row = teacher._record_row(0, points, False, np.zeros((33, 4)), (points, True))
     assert len(row) == len(teacher.RECORD_HEADER)
     assert row[len(teacher.HEADER) + len(teacher.BODY_HEADER)] == 1
+
+
+def test_write_glove_packets_uses_manitas_format(tmp_path) -> None:
+    path = tmp_path / "glove.csv"
+    write_packets(path, [(123, 2, list(range(len(GLOVE_VALUES))))])
+
+    lines = path.read_text().splitlines()
+
+    assert lines[0] == "t_ms,emisor," + ",".join(GLOVE_VALUES)
+    assert lines[1].startswith("123,2,0,1,2")

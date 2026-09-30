@@ -32,10 +32,12 @@ import numpy as np
 from sklearn.model_selection import GroupKFold
 
 from app.catalog import load_catalog as load_sign_catalog
+from app.core.config import settings
 from app.vision.body import BodyStatus, body_status
 from app.vision.catalog import OTHER, Catalog, load_catalog
 from app.vision.classifier import BACKENDS, SignClassifier, make_backend
 from app.vision.features import NUM_LANDMARKS, Hand, landmarks_to_vector
+from app.vision.glove import MIN_GLOVE_PACKETS, GloveCollector, write_packets
 from app.vision.recognizer import (
     CONFIDENCE_THRESHOLD,
     DYNAMIC_MODEL_PATH,
@@ -914,6 +916,7 @@ def _save_practice(
     fps: float,
     bodies: dict[int, np.ndarray] | None = None,
     meta: dict[str, object] | None = None,
+    glove_packets: list[tuple[int, int, list[float]]] | None = None,
 ) -> str:
     """Guarda los puntos (para entrenar), una captura limpia (foto si es estática, clip si se
     mueve) y un .json con los datos del momento. Devuelve la ruta de la captura."""
@@ -926,6 +929,11 @@ def _save_practice(
         writer.writerow(RECORD_HEADER)
         for t_ms, points, is_left, other in rows:
             writer.writerow(_record_row(t_ms, points, is_left, bodies.get(t_ms), other))
+
+    glove_path = None
+    if glove_packets is not None:
+        glove_path = PRACTICE_DIR / "glove" / participant / target / name / "glove.csv"
+        write_packets(glove_path, glove_packets)
 
     capture_dir = PRACTICE_DIR / "captures" / target
     capture_dir.mkdir(parents=True, exist_ok=True)
@@ -946,6 +954,8 @@ def _save_practice(
         "captura": relative,
         "puntos": landmarks_path.relative_to(ROOT_DIR).as_posix(),
     }
+    if glove_path is not None:
+        sidecar["guante"] = glove_path.relative_to(ROOT_DIR).as_posix()
     path.with_suffix(".json").write_text(
         json.dumps(sidecar, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -971,10 +981,12 @@ def practice(
     reps: int,
     review: bool = True,
     body_enabled: bool = True,
+    glove_enabled: bool = False,
 ) -> None:
     """Pide seña por seña. Cuando el modelo reconoce la pedida, muestra la captura para
     aprobarla (con `review`), guarda sus puntos y la captura en data/practice/ y pasa a la
-    siguiente. `vision train` usa lo guardado como datos.
+    siguiente. `vision train` usa lo guardado como datos de visión. Con `glove_enabled`, también
+    guarda `glove.csv` crudo por repetición para prepararlo con el pipeline de `manitas`.
 
     Con `body_enabled`, solo se guarda si la persona está bien encuadrada (de frente, con
     cara y hombros a la vista), y se guardan también los puntos del cuerpo."""
@@ -986,12 +998,20 @@ def practice(
 
     tracker, capture = HandTracker(), open_camera(camera)
     body_view = BodyView(body_enabled)
+    glove = (
+        GloveCollector(settings.glove_device_name, settings.glove_characteristic_uuid)
+        if glove_enabled
+        else None
+    )
+    if glove:
+        glove.start()
     hand_frames: deque[tuple[int, np.ndarray, bool, Hand | None, str]] = deque(maxlen=120)
     body_frames: deque[tuple[int, np.ndarray]] = deque(maxlen=120)
     clip: deque[tuple[int, np.ndarray]] = deque()
     results: list[tuple[str, str]] = []
     feedback: tuple[str, tuple[int, int, int], float] | None = None
     index, started = 0, time.monotonic()
+    glove_mark = glove.mark() if glove else 0
     paused_until = 0.0  # tras guardar, un momento para cambiar de seña (o reacomodar la mano)
 
     try:
@@ -1074,6 +1094,14 @@ def practice(
                 if not rows:
                     feedback = ("No hay mano: no se guardo nada", (0, 200, 255), now + 1.5)
                     continue
+                glove_packets = glove.since(glove_mark) if glove else None
+                if glove and len(glove_packets) < MIN_GLOVE_PACKETS:
+                    feedback = (
+                        f"No hay suficientes datos del guante ({len(glove_packets)} paquetes)",
+                        (0, 200, 255),
+                        now + 2.0,
+                    )
+                    continue
                 clip_frames, fps = _clip_since(clip, rows[0][0] - 300)
                 if review:
                     photo = clean.copy()
@@ -1104,7 +1132,15 @@ def practice(
                         target, participant, result, clean, recognizer, body_view.status
                     )
                     saved = _save_practice(
-                        target, participant, rows, clean, clip_frames, fps, dict(body_frames), meta
+                        target,
+                        participant,
+                        rows,
+                        clean,
+                        clip_frames,
+                        fps,
+                        dict(body_frames),
+                        meta,
+                        glove_packets,
                     )
                     message = f"Guardada {_ascii(target)} ({result})"
                     feedback = (message, (80, 220, 120), time.monotonic() + SAVED_MESSAGE_SECONDS)
@@ -1112,6 +1148,7 @@ def practice(
             _log_practice(participant, target, result, elapsed, saved)
             results.append((target, result))
             index, started = index + 1, now
+            glove_mark = glove.mark() if glove else 0
             if saved:
                 paused_until = now + SAVED_MESSAGE_SECONDS
             recognizer.reset()
@@ -1122,6 +1159,8 @@ def practice(
         cv2.destroyAllWindows()
         tracker.close()
         body_view.close()
+        if glove:
+            glove.close()
 
     if not results:
         return
@@ -1220,6 +1259,20 @@ def main() -> None:
         "--no-review", action="store_true", help="guardar sin mostrar la captura antes"
     )
 
+    glove_practice_parser = subparsers.add_parser(
+        "practica_guante",
+        aliases=["practice-glove", "practice_glove"],
+        help="practicar y guardar landmarks de visión más paquetes crudos del guante",
+    )
+    glove_practice_parser.add_argument("--participant", default="p01")
+    glove_practice_parser.add_argument(
+        "--signs", help="señas a pedir separadas por coma (ej. A,B,Ñ); por defecto todas"
+    )
+    glove_practice_parser.add_argument("--reps", type=int, default=1)
+    glove_practice_parser.add_argument("--camera", type=int, default=0)
+    glove_practice_parser.add_argument("--no-body", action="store_true")
+    glove_practice_parser.add_argument("--no-review", action="store_true")
+
     clear_parser = subparsers.add_parser(
         "clear", help="borrar todo lo guardado por practice (no toca los datasets)"
     )
@@ -1283,6 +1336,17 @@ def main() -> None:
             max(args.reps, 1),
             review=not args.no_review,
             body_enabled=not args.no_body,
+        )
+    elif args.command in ("practica_guante", "practice-glove", "practice_glove"):
+        signs = args.signs.split(",") if args.signs else None
+        practice(
+            args.participant,
+            args.camera,
+            signs,
+            max(args.reps, 1),
+            review=not args.no_review,
+            body_enabled=not args.no_body,
+            glove_enabled=True,
         )
     elif args.command == "clear":
         clear_practice(args.yes)

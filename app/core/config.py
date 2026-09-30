@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     vision_confidence_threshold: float = Field(0.65, ge=0, le=1)
     vision_vote_ms: PositiveInt = 400  # ventana de votos del modelo estático
 
+    # Guante BLE: valores del receptor ESP32 de `manitas/config/settings.py`.
+    glove_device_name: str = "GuanteLSM"
+    glove_characteristic_uuid: str = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
 
 @lru_cache
 def get_settings() -> Settings:
